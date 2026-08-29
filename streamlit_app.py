@@ -1612,6 +1612,238 @@ def generate_governance_interpretation(summary):
 
 
 # ============================================================
+# Threshold Simulator Engine
+# ============================================================
+
+def threshold_simulated_action(
+    predicted_tier,
+    score_based_tier,
+    confidence,
+    p_high,
+    review_threshold,
+    high_risk_override_threshold
+):
+    """
+    Simulate the decision action under user-selected thresholds.
+    This does not change the main model. It only recalculates governance decisions.
+    """
+
+    if confidence < review_threshold:
+        return "Human Review - Low Confidence"
+
+    if predicted_tier != score_based_tier:
+        return "Human Review - Model/Score Conflict"
+
+    if (predicted_tier != "High") and (p_high >= high_risk_override_threshold):
+        return "Human Review - Possible High Risk"
+
+    if predicted_tier == "High":
+        return "Auto Escalate as High Risk"
+
+    if predicted_tier == "Medium":
+        return "Auto Monitor as Medium Risk"
+
+    if predicted_tier == "Low":
+        return "Auto Clear as Low Risk"
+
+    return "Human Review - Undefined"
+
+
+def run_threshold_simulation(
+    results_df,
+    review_threshold,
+    high_risk_override_threshold
+):
+    """
+    Recalculate recommended actions using custom thresholds.
+    """
+
+    required_cols = [
+        "Predicted_Tier",
+        "Score_Based_Tier",
+        "P_High",
+        "Confidence",
+        "Sustainability_Risk_Score"
+    ]
+
+    missing_cols = [
+        col for col in required_cols
+        if col not in results_df.columns
+    ]
+
+    if missing_cols:
+        raise ValueError(
+            "Threshold simulator is missing required columns: "
+            + ", ".join(missing_cols)
+        )
+
+    sim_df = results_df.copy()
+
+    sim_df["Simulated_Action"] = sim_df.apply(
+        lambda row: threshold_simulated_action(
+            predicted_tier=row["Predicted_Tier"],
+            score_based_tier=row["Score_Based_Tier"],
+            confidence=row["Confidence"],
+            p_high=row["P_High"],
+            review_threshold=review_threshold,
+            high_risk_override_threshold=high_risk_override_threshold
+        ),
+        axis=1
+    )
+
+    sim_df["Simulated_Governance_Category"] = sim_df[
+        "Simulated_Action"
+    ].apply(classify_governance_category)
+
+    sim_df["Simulated_Is_Human_Review"] = sim_df[
+        "Simulated_Governance_Category"
+    ].eq("Human Review")
+
+    sim_df["Simulated_Is_Auto_Decision"] = ~sim_df[
+        "Simulated_Is_Human_Review"
+    ]
+
+    total_cases = len(sim_df)
+
+    human_review_count = int(sim_df["Simulated_Is_Human_Review"].sum())
+    auto_decision_count = int(sim_df["Simulated_Is_Auto_Decision"].sum())
+    predicted_high_count = int(sim_df["Predicted_Tier"].eq("High").sum())
+    low_confidence_count = int((sim_df["Confidence"] < review_threshold).sum())
+    possible_high_count = int(
+        (
+            sim_df["P_High"] >= high_risk_override_threshold
+        ).sum()
+    )
+
+    summary = {
+        "Total Cases": total_cases,
+        "Review Threshold": review_threshold,
+        "High Risk Override Threshold": high_risk_override_threshold,
+        "Human Review Count": human_review_count,
+        "Auto Decision Count": auto_decision_count,
+        "Human Review Rate": human_review_count / total_cases if total_cases else 0,
+        "Auto Decision Rate": auto_decision_count / total_cases if total_cases else 0,
+        "Predicted High Count": predicted_high_count,
+        "Predicted High Rate": predicted_high_count / total_cases if total_cases else 0,
+        "Low Confidence Count": low_confidence_count,
+        "Possible High Risk Count": possible_high_count,
+        "Average Confidence": float(sim_df["Confidence"].mean()),
+        "Average P_High": float(sim_df["P_High"].mean()),
+        "Average Risk Score": float(sim_df["Sustainability_Risk_Score"].mean())
+    }
+
+    action_summary = (
+        sim_df["Simulated_Action"]
+        .value_counts()
+        .rename_axis("Simulated Action")
+        .reset_index(name="Count")
+    )
+
+    action_summary["Percent"] = (
+        action_summary["Count"] / total_cases * 100
+    ).round(2)
+
+    category_summary = (
+        sim_df["Simulated_Governance_Category"]
+        .value_counts()
+        .rename_axis("Governance Category")
+        .reset_index(name="Count")
+    )
+
+    category_summary["Percent"] = (
+        category_summary["Count"] / total_cases * 100
+    ).round(2)
+
+    return {
+        "sim_df": sim_df,
+        "summary": summary,
+        "action_summary": action_summary,
+        "category_summary": category_summary
+    }
+
+
+def build_threshold_sensitivity_curve(
+    results_df,
+    review_threshold_values,
+    fixed_high_risk_override_threshold
+):
+    """
+    Build sensitivity table by changing review threshold while keeping high-risk override fixed.
+    """
+
+    rows = []
+
+    for threshold in review_threshold_values:
+        outputs = run_threshold_simulation(
+            results_df=results_df,
+            review_threshold=threshold,
+            high_risk_override_threshold=fixed_high_risk_override_threshold
+        )
+
+        summary = outputs["summary"]
+
+        rows.append({
+            "Review Threshold": threshold,
+            "Human Review Rate": summary["Human Review Rate"],
+            "Auto Decision Rate": summary["Auto Decision Rate"],
+            "Human Review Count": summary["Human Review Count"],
+            "Auto Decision Count": summary["Auto Decision Count"],
+            "Low Confidence Count": summary["Low Confidence Count"]
+        })
+
+    return pd.DataFrame(rows)
+
+
+def explain_threshold_simulation(summary):
+    """
+    Generate readable interpretation for selected threshold settings.
+    """
+
+    review_rate = summary["Human Review Rate"]
+    auto_rate = summary["Auto Decision Rate"]
+    review_threshold = summary["Review Threshold"]
+    high_override = summary["High Risk Override Threshold"]
+
+    lines = []
+
+    lines.append(
+        f"The selected review threshold is **{review_threshold:.2f}** and the selected high-risk override threshold is **{high_override:.2f}**."
+    )
+
+    lines.append(
+        f"Under these settings, **{summary['Human Review Count']} cases** are routed to Human Review, "
+        f"while **{summary['Auto Decision Count']} cases** receive automated decisions."
+    )
+
+    lines.append(
+        f"The Human Review Rate is **{review_rate:.2%}**, and the Auto Decision Rate is **{auto_rate:.2%}**."
+    )
+
+    if review_rate >= 0.50:
+        lines.append(
+            "This is a conservative configuration. It increases human oversight but may create a heavier review workload."
+        )
+    elif review_rate >= 0.25:
+        lines.append(
+            "This is a balanced configuration. It keeps a meaningful level of human oversight while allowing automation."
+        )
+    else:
+        lines.append(
+            "This is an automation-oriented configuration. It reduces review workload but should be monitored carefully."
+        )
+
+    lines.append(
+        f"There are **{summary['Low Confidence Count']} low-confidence cases** under the selected review threshold."
+    )
+
+    lines.append(
+        f"There are **{summary['Possible High Risk Count']} cases** with P_High greater than or equal to the selected high-risk override threshold."
+    )
+
+    return lines
+
+
+# ============================================================
 # Scenario Engine
 # ============================================================
 
@@ -1742,10 +1974,11 @@ It demonstrates:
 # Tabs
 # ============================================================
 
-tab1, tab_batch, tab_governance, tab_enrichment, tab_portfolio, tab2, tab3, tab4 = st.tabs([
+tab1, tab_batch, tab_governance, tab_threshold, tab_enrichment, tab_portfolio, tab2, tab3, tab4 = st.tabs([
     "Risk Screening",
     "Batch Prediction",
     "Governance Dashboard",
+    "Threshold Simulator",
     "Data Enrichment",
     "Portfolio Optimizer",
     "Scenario Simulation",
@@ -2456,6 +2689,263 @@ def explain_enrichment_layer(summary):
         )
 
     return lines
+
+
+# ============================================================
+# Tab: Threshold Simulator
+# ============================================================
+
+with tab_threshold:
+    st.subheader("Threshold Simulator")
+
+    st.markdown(
+        """
+This simulator shows how different governance thresholds affect human review burden and automated decision rates.
+
+It recalculates decision outcomes using custom thresholds without changing the trained model.
+        """
+    )
+
+    threshold_source_options = ["Base Dataset Simulation"]
+
+    if "latest_batch_results" in st.session_state:
+        threshold_source_options.insert(0, "Latest Batch Prediction")
+
+    threshold_source = st.radio(
+        "Select data source for threshold simulation",
+        threshold_source_options,
+        horizontal=True
+    )
+
+    if threshold_source == "Latest Batch Prediction":
+        threshold_input = st.session_state["latest_batch_results"].copy()
+        st.success(
+            f"Using latest batch prediction result with {len(threshold_input)} rows."
+        )
+
+    else:
+        base_input_cols = [
+            "Name",
+            "Type1",
+            "Type2",
+            "HP",
+            "Attack",
+            "Defense",
+            "Sp_Atk",
+            "Sp_Def",
+            "Speed"
+        ]
+
+        base_input_cols = [
+            c for c in base_input_cols
+            if c in sdf.columns
+        ]
+
+        with st.spinner("Generating threshold simulation input from base dataset..."):
+            threshold_input = predict_batch(
+                sdf[base_input_cols].copy()
+            )
+
+        st.info(
+            f"Using base dataset simulation with {len(threshold_input)} rows."
+        )
+
+    st.write("### Threshold Controls")
+
+    control_col1, control_col2 = st.columns(2)
+
+    with control_col1:
+        selected_review_threshold = st.slider(
+            "Review Threshold",
+            min_value=0.50,
+            max_value=0.95,
+            value=float(FINAL_REVIEW_THRESHOLD),
+            step=0.05
+        )
+
+    with control_col2:
+        selected_high_override = st.slider(
+            "High Risk Override Threshold",
+            min_value=0.10,
+            max_value=0.80,
+            value=float(HIGH_RISK_OVERRIDE_THRESHOLD),
+            step=0.05
+        )
+
+    st.caption(
+        "Higher review threshold usually increases Human Review. "
+        "Lower high-risk override threshold usually increases review for possible high-risk cases."
+    )
+
+    try:
+        threshold_outputs = run_threshold_simulation(
+            results_df=threshold_input,
+            review_threshold=selected_review_threshold,
+            high_risk_override_threshold=selected_high_override
+        )
+
+        sim_df = threshold_outputs["sim_df"]
+        summary = threshold_outputs["summary"]
+        action_summary = threshold_outputs["action_summary"]
+        category_summary = threshold_outputs["category_summary"]
+
+        st.write("### Simulated Governance Summary")
+
+        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+
+        metric_col1.metric(
+            "Total Cases",
+            int(summary["Total Cases"])
+        )
+
+        metric_col2.metric(
+            "Human Review Rate",
+            f'{summary["Human Review Rate"]:.2%}'
+        )
+
+        metric_col3.metric(
+            "Auto Decision Rate",
+            f'{summary["Auto Decision Rate"]:.2%}'
+        )
+
+        metric_col4.metric(
+            "Low Confidence Count",
+            int(summary["Low Confidence Count"])
+        )
+
+        metric_col5, metric_col6, metric_col7, metric_col8 = st.columns(4)
+
+        metric_col5.metric(
+            "Human Review Count",
+            int(summary["Human Review Count"])
+        )
+
+        metric_col6.metric(
+            "Auto Decision Count",
+            int(summary["Auto Decision Count"])
+        )
+
+        metric_col7.metric(
+            "Possible High Risk Count",
+            int(summary["Possible High Risk Count"])
+        )
+
+        metric_col8.metric(
+            "Average P_High",
+            f'{summary["Average P_High"]:.4f}'
+        )
+
+        st.write("### Threshold Interpretation")
+
+        for line in explain_threshold_simulation(summary):
+            st.markdown(f"- {line}")
+
+        st.divider()
+
+        st.write("### Governance Category Distribution")
+
+        st.bar_chart(
+            category_summary.set_index("Governance Category")["Count"]
+        )
+
+        st.dataframe(
+            category_summary,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.write("### Simulated Action Summary")
+
+        st.dataframe(
+            action_summary,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.write("### Review Threshold Sensitivity Curve")
+
+        threshold_values = np.round(
+            np.arange(0.50, 0.96, 0.05),
+            2
+        )
+
+        sensitivity_df = build_threshold_sensitivity_curve(
+            results_df=threshold_input,
+            review_threshold_values=threshold_values,
+            fixed_high_risk_override_threshold=selected_high_override
+        )
+
+        st.line_chart(
+            sensitivity_df.set_index("Review Threshold")[
+                ["Human Review Rate", "Auto Decision Rate"]
+            ]
+        )
+
+        st.dataframe(
+            sensitivity_df.round(4),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.write("### Simulated Decision Results")
+
+        sim_display_cols = [
+            "Name",
+            "Type1",
+            "Type2",
+            "Predicted_Tier",
+            "Score_Based_Tier",
+            "P_High",
+            "Confidence",
+            "Simulated_Action",
+            "Simulated_Governance_Category",
+            "Sustainability_Risk_Score"
+        ]
+
+        sim_display_cols = [
+            c for c in sim_display_cols
+            if c in sim_df.columns
+        ]
+
+        st.dataframe(
+            sim_df[sim_display_cols].head(100).round(4),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.write("### Download Threshold Simulation Results")
+
+        sim_csv = sim_df.to_csv(
+            index=False,
+            encoding="utf-8-sig"
+        ).encode("utf-8-sig")
+
+        sensitivity_csv = sensitivity_df.to_csv(
+            index=False,
+            encoding="utf-8-sig"
+        ).encode("utf-8-sig")
+
+        download_col1, download_col2 = st.columns(2)
+
+        with download_col1:
+            st.download_button(
+                label="Download Simulated Decisions",
+                data=sim_csv,
+                file_name="pokemon_threshold_simulated_decisions.csv",
+                mime="text/csv"
+            )
+
+        with download_col2:
+            st.download_button(
+                label="Download Threshold Sensitivity Curve",
+                data=sensitivity_csv,
+                file_name="pokemon_threshold_sensitivity_curve.csv",
+                mime="text/csv"
+            )
+
+    except Exception as e:
+        st.error("Threshold simulator failed.")
+        st.exception(e)
 
 
 # ============================================================
