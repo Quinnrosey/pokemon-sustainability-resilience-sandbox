@@ -1,8 +1,16 @@
 import numpy as np
 import pandas as pd
-import joblib
 import streamlit as st
 from pathlib import Path
+
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler, MinMaxScaler
+from sklearn.impute import SimpleImputer
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.metrics import accuracy_score, f1_score, recall_score, classification_report
+
 
 # ============================================================
 # App Config
@@ -15,41 +23,228 @@ st.set_page_config(
 )
 
 BASE_DIR = Path(__file__).parent
+DATA_PATH = BASE_DIR / "pokemon_dataset.csv"
 
-MODEL_PATH = BASE_DIR / "pokemon_sustainability_final_pipeline.joblib"
-REFERENCE_PATH = BASE_DIR / "simulation_reference.joblib"
+RANDOM_STATE = 42
+CLASS_ORDER = ["Low", "Medium", "High"]
+CLASS_TO_ID = {"Low": 0, "Medium": 1, "High": 2}
+ID_TO_CLASS = {0: "Low", 1: "Medium", 2: "High"}
+
+REQUIRED_STAT_COLS = ["HP", "Attack", "Defense", "Sp_Atk", "Sp_Def", "Speed"]
+FINAL_FEATURES = ["Type1", "Type2", "HP", "Attack", "Defense", "Sp_Atk", "Sp_Def", "Speed"]
+
+FINAL_REVIEW_THRESHOLD = 0.75
+HIGH_RISK_OVERRIDE_THRESHOLD = 0.35
 
 
 # ============================================================
-# Load Artifacts
+# Data + Model Builder
 # ============================================================
 
 @st.cache_resource
-def load_artifacts():
-    model = joblib.load(MODEL_PATH)
-    ref = joblib.load(REFERENCE_PATH)
-    return model, ref
+def build_model_from_csv():
+    if not DATA_PATH.exists():
+        raise FileNotFoundError(
+            "pokemon_dataset.csv not found. Please upload pokemon_dataset.csv to the root of the GitHub repo."
+        )
+
+    df = pd.read_csv(DATA_PATH)
+
+    df.columns = (
+        df.columns
+        .str.strip()
+        .str.replace(" ", "_")
+        .str.replace(".", "", regex=False)
+    )
+
+    required_cols = ["Name", "Type1", "Type2", "Total"] + REQUIRED_STAT_COLS
+    missing_cols = [c for c in required_cols if c not in df.columns]
+
+    if missing_cols:
+        raise ValueError(f"Missing required columns: {missing_cols}")
+
+    sdf = df.copy()
+
+    for col in REQUIRED_STAT_COLS:
+        sdf[col] = pd.to_numeric(sdf[col], errors="coerce")
+
+    sdf[REQUIRED_STAT_COLS] = sdf[REQUIRED_STAT_COLS].fillna(
+        sdf[REQUIRED_STAT_COLS].median()
+    )
+
+    # --------------------------------------------------------
+    # Sustainability proxy construction
+    # --------------------------------------------------------
+
+    stat_scaler = MinMaxScaler()
+    scaled_stats = pd.DataFrame(
+        stat_scaler.fit_transform(sdf[REQUIRED_STAT_COLS]),
+        columns=[f"{c}_Scaled" for c in REQUIRED_STAT_COLS],
+        index=sdf.index
+    )
+
+    sdf = pd.concat([sdf, scaled_stats], axis=1)
+
+    sdf["Resilience_Index"] = sdf[
+        ["HP_Scaled", "Defense_Scaled", "Sp_Def_Scaled"]
+    ].mean(axis=1)
+
+    sdf["Pressure_Index"] = sdf[
+        ["Attack_Scaled", "Sp_Atk_Scaled", "Speed_Scaled"]
+    ].mean(axis=1)
+
+    sdf["Adaptability_Index"] = sdf[
+        ["Speed_Scaled", "Sp_Def_Scaled", "HP_Scaled"]
+    ].mean(axis=1)
+
+    scaled_cols = [
+        "HP_Scaled", "Attack_Scaled", "Defense_Scaled",
+        "Sp_Atk_Scaled", "Sp_Def_Scaled", "Speed_Scaled"
+    ]
+
+    sdf["Stat_Imbalance"] = sdf[scaled_cols].std(axis=1)
+
+    imbalance_scaler = MinMaxScaler()
+    sdf["Balance_Index"] = 1 - imbalance_scaler.fit_transform(
+        sdf[["Stat_Imbalance"]]
+    ).ravel()
+
+    sdf["Balance_Index"] = sdf["Balance_Index"].clip(0, 1)
+
+    sdf["Is_Dual_Type"] = sdf["Type2"].notna().astype(int)
+    sdf["Diversity_Index"] = sdf["Is_Dual_Type"]
+
+    sdf["Sustainability_Risk_Score"] = (
+        0.40 * sdf["Pressure_Index"] +
+        0.30 * (1 - sdf["Resilience_Index"]) +
+        0.20 * (1 - sdf["Balance_Index"]) +
+        0.10 * (1 - sdf["Diversity_Index"])
+    )
+
+    sdf["Sustainability_Risk_Tier"] = pd.qcut(
+        sdf["Sustainability_Risk_Score"],
+        q=3,
+        labels=CLASS_ORDER
+    )
+
+    _, risk_bins = pd.qcut(
+        sdf["Sustainability_Risk_Score"],
+        q=3,
+        labels=CLASS_ORDER,
+        retbins=True,
+        duplicates="drop"
+    )
+
+    low_medium_boundary = float(risk_bins[1])
+    medium_high_boundary = float(risk_bins[2])
+
+    # --------------------------------------------------------
+    # ML training
+    # --------------------------------------------------------
+
+    X = sdf[FINAL_FEATURES].copy()
+    y = sdf["Sustainability_Risk_Tier"].map(CLASS_TO_ID).astype(int)
+
+    categorical_cols = ["Type1", "Type2"]
+    numerical_cols = ["HP", "Attack", "Defense", "Sp_Atk", "Sp_Def", "Speed"]
+
+    numeric_pipeline = Pipeline(steps=[
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler", StandardScaler())
+    ])
+
+    try:
+        onehot = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+    except TypeError:
+        onehot = OneHotEncoder(handle_unknown="ignore", sparse=False)
+
+    categorical_pipeline = Pipeline(steps=[
+        ("imputer", SimpleImputer(strategy="most_frequent")),
+        ("onehot", onehot)
+    ])
+
+    preprocess = ColumnTransformer(
+        transformers=[
+            ("num", numeric_pipeline, numerical_cols),
+            ("cat", categorical_pipeline, categorical_cols)
+        ],
+        remainder="drop"
+    )
+
+    model = HistGradientBoostingClassifier(
+        random_state=RANDOM_STATE
+    )
+
+    pipeline = Pipeline(steps=[
+        ("preprocess", preprocess),
+        ("model", model)
+    ])
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=0.20,
+        stratify=y,
+        random_state=RANDOM_STATE
+    )
+
+    pipeline.fit(X_train, y_train)
+    y_pred = pipeline.predict(X_test)
+
+    metrics = {
+        "Accuracy": accuracy_score(y_test, y_pred),
+        "Macro F1": f1_score(y_test, y_pred, average="macro", zero_division=0),
+        "Recall High": recall_score(
+            y_test,
+            y_pred,
+            labels=[CLASS_TO_ID["High"]],
+            average="macro",
+            zero_division=0
+        ),
+        "Classification Report": classification_report(
+            y_test,
+            y_pred,
+            target_names=CLASS_ORDER,
+            zero_division=0,
+            output_dict=True
+        )
+    }
+
+    # Refit on full data for app prediction
+    pipeline.fit(X, y)
+
+    pokemon_types = sorted(
+        set(sdf["Type1"].dropna().astype(str).unique().tolist()) |
+        set(sdf["Type2"].dropna().astype(str).unique().tolist())
+    )
+
+    return {
+        "df": df,
+        "sdf": sdf,
+        "pipeline": pipeline,
+        "stat_scaler": stat_scaler,
+        "imbalance_scaler": imbalance_scaler,
+        "metrics": metrics,
+        "pokemon_types": pokemon_types,
+        "low_medium_boundary": low_medium_boundary,
+        "medium_high_boundary": medium_high_boundary
+    }
 
 
-model, ref = load_artifacts()
+artifacts = build_model_from_csv()
 
-CLASS_ORDER = ref["class_order"]
-ID_TO_CLASS = {int(k): v for k, v in ref["id_to_class"].items()}
-FINAL_FEATURES = ref["final_features"]
-POKEMON_TYPES = ref["pokemon_types"]
-REQUIRED_STAT_COLS = ref["required_stat_cols"]
-
-FINAL_REVIEW_THRESHOLD = ref["final_review_threshold"]
-HIGH_RISK_OVERRIDE_THRESHOLD = ref["high_risk_override_threshold"]
-LOW_MEDIUM_BOUNDARY = ref["low_medium_boundary"]
-MEDIUM_HIGH_BOUNDARY = ref["medium_high_boundary"]
-
-stat_scaler_app = ref["stat_scaler_app"]
-imbalance_scaler_app = ref["imbalance_scaler_app"]
+sdf = artifacts["sdf"]
+pipeline = artifacts["pipeline"]
+stat_scaler = artifacts["stat_scaler"]
+imbalance_scaler = artifacts["imbalance_scaler"]
+metrics = artifacts["metrics"]
+POKEMON_TYPES = artifacts["pokemon_types"]
+LOW_MEDIUM_BOUNDARY = artifacts["low_medium_boundary"]
+MEDIUM_HIGH_BOUNDARY = artifacts["medium_high_boundary"]
 
 
 # ============================================================
-# Sustainability Score Engine
+# Scoring Engine
 # ============================================================
 
 def compute_sustainability_score(input_df):
@@ -59,7 +254,7 @@ def compute_sustainability_score(input_df):
         temp[col] = pd.to_numeric(temp[col], errors="coerce")
 
     scaled = pd.DataFrame(
-        stat_scaler_app.transform(temp[REQUIRED_STAT_COLS]),
+        stat_scaler.transform(temp[REQUIRED_STAT_COLS]),
         columns=[f"{c}_Scaled" for c in REQUIRED_STAT_COLS],
         index=temp.index
     ).clip(0, 1)
@@ -78,16 +273,12 @@ def compute_sustainability_score(input_df):
 
     stat_imbalance = scaled[
         [
-            "HP_Scaled",
-            "Attack_Scaled",
-            "Defense_Scaled",
-            "Sp_Atk_Scaled",
-            "Sp_Def_Scaled",
-            "Speed_Scaled"
+            "HP_Scaled", "Attack_Scaled", "Defense_Scaled",
+            "Sp_Atk_Scaled", "Sp_Def_Scaled", "Speed_Scaled"
         ]
     ].std(axis=1).to_frame("Stat_Imbalance")
 
-    balance_index = 1 - imbalance_scaler_app.transform(stat_imbalance).ravel()
+    balance_index = 1 - imbalance_scaler.transform(stat_imbalance).ravel()
     balance_index = np.clip(balance_index, 0, 1)
 
     diversity_index = temp["Type2"].notna().astype(int)
@@ -116,10 +307,6 @@ def compute_sustainability_score(input_df):
         "Score_Based_Tier": str(score_based_tier.iloc[0])
     }
 
-
-# ============================================================
-# Decision Engine
-# ============================================================
 
 def decision_engine_action(predicted_tier, score_based_tier, confidence, p_high):
     if confidence < FINAL_REVIEW_THRESHOLD:
@@ -159,8 +346,8 @@ def predict_single(type1, type2, hp, attack, defense, sp_atk, sp_def, speed):
 
     model_input = input_df[FINAL_FEATURES].copy()
 
-    pred_id = model.predict(model_input)[0]
-    proba = model.predict_proba(model_input)[0]
+    pred_id = pipeline.predict(model_input)[0]
+    proba = pipeline.predict_proba(model_input)[0]
 
     predicted_tier = ID_TO_CLASS[int(pred_id)]
 
@@ -178,7 +365,7 @@ def predict_single(type1, type2, hp, attack, defense, sp_atk, sp_def, speed):
         p_high=p_high
     )
 
-    output = {
+    return {
         "Predicted Tier": predicted_tier,
         "Score-Based Tier": score_info["Score_Based_Tier"],
         "Recommended Action": action,
@@ -194,12 +381,6 @@ def predict_single(type1, type2, hp, attack, defense, sp_atk, sp_def, speed):
         "Diversity Index": score_info["Diversity_Index"]
     }
 
-    return output
-
-
-# ============================================================
-# Scenario Engine
-# ============================================================
 
 def apply_scenario(input_df, scenario_name):
     scenario_df = input_df.copy()
@@ -246,16 +427,23 @@ st.title("🌱 Pokémon Sustainability Resilience Sandbox")
 
 st.markdown(
     """
-This is a **synthetic sustainability-risk simulation prototype** using Pokémon-style stats.  
-It demonstrates a full data product workflow: proxy design, ML classification, human-in-the-loop decision logic, and scenario simulation.
+This app is a **synthetic sustainability-risk simulation prototype** using Pokémon-style stats.
+
+It demonstrates:
+
+- Sustainability proxy design
+- Machine learning risk classification
+- Human-in-the-loop decision logic
+- Scenario simulation
 
 **Important caution:** This is not empirical ESG scoring or real conservation evidence.
 """
 )
 
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "Risk Screening",
     "Scenario Simulation",
+    "Model Diagnostics",
     "Decision Logic"
 ])
 
@@ -263,56 +451,69 @@ type2_choices = ["None"] + POKEMON_TYPES
 
 
 # ============================================================
-# Tab 1: Risk Screening
+# Sidebar
+# ============================================================
+
+st.sidebar.header("Input Profile")
+
+type1 = st.sidebar.selectbox(
+    "Primary Type",
+    POKEMON_TYPES,
+    index=POKEMON_TYPES.index("Dragon") if "Dragon" in POKEMON_TYPES else 0
+)
+
+type2 = st.sidebar.selectbox(
+    "Secondary Type",
+    type2_choices,
+    index=type2_choices.index("Flying") if "Flying" in type2_choices else 0
+)
+
+hp = st.sidebar.number_input("HP", min_value=1, max_value=255, value=90, step=1)
+attack = st.sidebar.number_input("Attack", min_value=1, max_value=255, value=130, step=1)
+defense = st.sidebar.number_input("Defense", min_value=1, max_value=255, value=95, step=1)
+sp_atk = st.sidebar.number_input("Sp. Attack", min_value=1, max_value=255, value=120, step=1)
+sp_def = st.sidebar.number_input("Sp. Defense", min_value=1, max_value=255, value=90, step=1)
+speed = st.sidebar.number_input("Speed", min_value=1, max_value=255, value=100, step=1)
+
+
+# ============================================================
+# Tab 1
 # ============================================================
 
 with tab1:
     st.subheader("Risk Screening")
 
-    col1, col2 = st.columns(2)
+    result = predict_single(
+        type1, type2, hp, attack, defense, sp_atk, sp_def, speed
+    )
 
-    with col1:
-        type1 = st.selectbox("Primary Type", POKEMON_TYPES, index=POKEMON_TYPES.index("Dragon") if "Dragon" in POKEMON_TYPES else 0)
-        hp = st.number_input("HP", min_value=1, max_value=255, value=90, step=1)
-        defense = st.number_input("Defense", min_value=1, max_value=255, value=95, step=1)
-        sp_def = st.number_input("Sp. Defense", min_value=1, max_value=255, value=90, step=1)
+    col1, col2, col3, col4 = st.columns(4)
 
-    with col2:
-        type2 = st.selectbox("Secondary Type", type2_choices, index=type2_choices.index("Flying") if "Flying" in type2_choices else 0)
-        attack = st.number_input("Attack", min_value=1, max_value=255, value=130, step=1)
-        sp_atk = st.number_input("Sp. Attack", min_value=1, max_value=255, value=120, step=1)
-        speed = st.number_input("Speed", min_value=1, max_value=255, value=100, step=1)
+    col1.metric("Predicted Tier", result["Predicted Tier"])
+    col2.metric("Recommended Action", result["Recommended Action"])
+    col3.metric("Confidence", f'{result["Confidence"]:.4f}')
+    col4.metric("P_High", f'{result["P_High"]:.4f}')
 
-    if st.button("Run Risk Screening", type="primary"):
-        result = predict_single(type1, type2, hp, attack, defense, sp_atk, sp_def, speed)
+    st.write("### Detailed Output")
+    st.dataframe(
+        pd.DataFrame([result]).round(4),
+        use_container_width=True
+    )
 
-        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
-
-        metric_col1.metric("Predicted Tier", result["Predicted Tier"])
-        metric_col2.metric("Recommended Action", result["Recommended Action"])
-        metric_col3.metric("Confidence", f'{result["Confidence"]:.4f}')
-        metric_col4.metric("P_High", f'{result["P_High"]:.4f}')
-
-        st.write("### Detailed Output")
-        st.dataframe(
-            pd.DataFrame([result]).round(4),
-            use_container_width=True
-        )
-
-        st.write("### Probability Distribution")
-        st.bar_chart(
-            pd.DataFrame({
-                "Probability": [
-                    result["P_Low"],
-                    result["P_Medium"],
-                    result["P_High"]
-                ]
-            }, index=["Low", "Medium", "High"])
-        )
+    st.write("### Probability Distribution")
+    st.bar_chart(
+        pd.DataFrame({
+            "Probability": [
+                result["P_Low"],
+                result["P_Medium"],
+                result["P_High"]
+            ]
+        }, index=["Low", "Medium", "High"])
+    )
 
 
 # ============================================================
-# Tab 2: Scenario Simulation
+# Tab 2
 # ============================================================
 
 with tab2:
@@ -330,74 +531,107 @@ with tab2:
         ]
     )
 
-    if st.button("Run Scenario Simulation"):
-        base_type2_value = np.nan if type2 == "None" else type2
+    base_type2_value = np.nan if type2 == "None" else type2
 
-        base_df = pd.DataFrame([{
-            "Type1": type1,
-            "Type2": base_type2_value,
-            "HP": float(hp),
-            "Attack": float(attack),
-            "Defense": float(defense),
-            "Sp_Atk": float(sp_atk),
-            "Sp_Def": float(sp_def),
-            "Speed": float(speed)
-        }])
+    base_df = pd.DataFrame([{
+        "Type1": type1,
+        "Type2": base_type2_value,
+        "HP": float(hp),
+        "Attack": float(attack),
+        "Defense": float(defense),
+        "Sp_Atk": float(sp_atk),
+        "Sp_Def": float(sp_def),
+        "Speed": float(speed)
+    }])
 
-        scenario_df = apply_scenario(base_df, scenario_name)
+    scenario_df = apply_scenario(base_df, scenario_name)
 
-        base_result = predict_single(type1, type2, hp, attack, defense, sp_atk, sp_def, speed)
+    base_result = predict_single(
+        type1, type2, hp, attack, defense, sp_atk, sp_def, speed
+    )
 
-        scenario_result = predict_single(
-            scenario_df.iloc[0]["Type1"],
-            "None" if pd.isna(scenario_df.iloc[0]["Type2"]) else scenario_df.iloc[0]["Type2"],
-            scenario_df.iloc[0]["HP"],
-            scenario_df.iloc[0]["Attack"],
-            scenario_df.iloc[0]["Defense"],
-            scenario_df.iloc[0]["Sp_Atk"],
-            scenario_df.iloc[0]["Sp_Def"],
-            scenario_df.iloc[0]["Speed"]
-        )
+    scenario_result = predict_single(
+        scenario_df.iloc[0]["Type1"],
+        "None" if pd.isna(scenario_df.iloc[0]["Type2"]) else scenario_df.iloc[0]["Type2"],
+        scenario_df.iloc[0]["HP"],
+        scenario_df.iloc[0]["Attack"],
+        scenario_df.iloc[0]["Defense"],
+        scenario_df.iloc[0]["Sp_Atk"],
+        scenario_df.iloc[0]["Sp_Def"],
+        scenario_df.iloc[0]["Speed"]
+    )
 
-        comparison = pd.DataFrame([
-            {
-                "Case": "Baseline",
-                "Predicted Tier": base_result["Predicted Tier"],
-                "Recommended Action": base_result["Recommended Action"],
-                "P_High": base_result["P_High"],
-                "Confidence": base_result["Confidence"],
-                "Risk Score": base_result["Synthetic Risk Score"],
-                "Pressure": base_result["Pressure Index"],
-                "Resilience": base_result["Resilience Index"],
-                "Balance": base_result["Balance Index"]
-            },
-            {
-                "Case": scenario_name,
-                "Predicted Tier": scenario_result["Predicted Tier"],
-                "Recommended Action": scenario_result["Recommended Action"],
-                "P_High": scenario_result["P_High"],
-                "Confidence": scenario_result["Confidence"],
-                "Risk Score": scenario_result["Synthetic Risk Score"],
-                "Pressure": scenario_result["Pressure Index"],
-                "Resilience": scenario_result["Resilience Index"],
-                "Balance": scenario_result["Balance Index"]
-            }
-        ])
+    comparison = pd.DataFrame([
+        {
+            "Case": "Baseline",
+            "Predicted Tier": base_result["Predicted Tier"],
+            "Recommended Action": base_result["Recommended Action"],
+            "P_High": base_result["P_High"],
+            "Confidence": base_result["Confidence"],
+            "Risk Score": base_result["Synthetic Risk Score"],
+            "Pressure": base_result["Pressure Index"],
+            "Resilience": base_result["Resilience Index"],
+            "Balance": base_result["Balance Index"]
+        },
+        {
+            "Case": scenario_name,
+            "Predicted Tier": scenario_result["Predicted Tier"],
+            "Recommended Action": scenario_result["Recommended Action"],
+            "P_High": scenario_result["P_High"],
+            "Confidence": scenario_result["Confidence"],
+            "Risk Score": scenario_result["Synthetic Risk Score"],
+            "Pressure": scenario_result["Pressure Index"],
+            "Resilience": scenario_result["Resilience Index"],
+            "Balance": scenario_result["Balance Index"]
+        }
+    ])
 
-        comparison["Risk Score Change"] = comparison["Risk Score"] - comparison.loc[0, "Risk Score"]
-        comparison["P_High Change"] = comparison["P_High"] - comparison.loc[0, "P_High"]
+    comparison["Risk Score Change"] = (
+        comparison["Risk Score"] - comparison.loc[0, "Risk Score"]
+    )
 
-        st.dataframe(comparison.round(4), use_container_width=True)
+    comparison["P_High Change"] = (
+        comparison["P_High"] - comparison.loc[0, "P_High"]
+    )
 
-        st.write("### Risk Score Comparison")
-        st.bar_chart(comparison.set_index("Case")[["Risk Score", "P_High"]])
+    st.dataframe(comparison.round(4), use_container_width=True)
+
+    st.write("### Risk Score and P_High Comparison")
+    st.bar_chart(comparison.set_index("Case")[["Risk Score", "P_High"]])
 
 
 # ============================================================
-# Tab 3: Decision Logic
+# Tab 3
 # ============================================================
 
 with tab3:
+    st.subheader("Model Diagnostics")
+
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric("Holdout Accuracy", f'{metrics["Accuracy"]:.4f}')
+    col2.metric("Macro F1", f'{metrics["Macro F1"]:.4f}')
+    col3.metric("Recall High", f'{metrics["Recall High"]:.4f}')
+
+    st.write("### Risk Tier Distribution")
+
+    tier_counts = (
+        sdf["Sustainability_Risk_Tier"]
+        .value_counts()
+        .reindex(CLASS_ORDER)
+    )
+
+    st.bar_chart(tier_counts)
+
+    st.write("### Dataset Preview")
+    st.dataframe(sdf.head(20), use_container_width=True)
+
+
+# ============================================================
+# Tab 4
+# ============================================================
+
+with tab4:
     st.subheader("Decision Engine Logic")
 
     st.markdown(
@@ -418,9 +652,9 @@ with tab3:
 5. Predicted Medium with sufficient confidence → Auto Monitor as Medium Risk  
 6. Predicted Low with sufficient confidence → Auto Clear as Low Risk  
 
-### Interpretation
+### Important Caution
 
-This system is a learning sandbox for ML workflow, decision routing, and synthetic sustainability simulation.
+This is a synthetic sustainability simulation.  
 It should not be used as real ESG scoring, conservation assessment, or policy evidence.
 """
     )
