@@ -2532,7 +2532,7 @@ This layer does not replace the main model logic. It is used to inspect addition
             f'{summary["Match Rate"]:.2%}'
         )
 
-                if summary["Match Rate"] >= 0.90:
+        if summary["Match Rate"] >= 0.90:
             st.success(
                 "Data enrichment quality is acceptable. Most rows were successfully matched with PokéAPI."
             )
