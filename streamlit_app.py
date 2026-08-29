@@ -630,7 +630,28 @@ with tab1:
         ]
     })
 
-    st.bar_chart(prob_df.set_index("Risk Tier"))
+    import altair as alt
+
+    prob_chart = (
+        alt.Chart(prob_df)
+        .mark_bar()
+        .encode(
+            x=alt.X(
+                "Risk Tier:N",
+                sort=["Low", "Medium", "High"],
+                title="Risk Tier"
+            ),
+            y=alt.Y(
+                "Probability:Q",
+                title="Probability",
+                scale=alt.Scale(domain=[0, 1])
+            ),
+            tooltip=["Risk Tier", alt.Tooltip("Probability:Q", format=".4f")]
+        )
+        .properties(height=350)
+    )
+
+    st.altair_chart(prob_chart, use_container_width=True)
 
     st.dataframe(
         prob_df.round(4),
