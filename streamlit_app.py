@@ -1557,6 +1557,21 @@ It penalizes portfolios with excessive High Risk concentration.
             "Avg Risk Score",
             f'{best["Avg_Risk_Score"]:.4f}'
         )
+        
+        if best["High_Risk_Count"] == 0:
+            risk_message = "low high-risk concentration"
+        elif best["High_Risk_Count"] == 1:
+            risk_message = "controlled high-risk concentration"
+        else:
+            risk_message = "noticeable high-risk concentration"
+
+        st.info(
+            f'The best portfolio achieved a score of {best["Portfolio_Score"]:.4f}, '
+            f'with {int(best["Unique_Type_Count"])} unique types and '
+            f'{int(best["High_Risk_Count"])} high-risk member(s). '
+            f'This suggests a portfolio with {risk_message}, '
+            'designed to balance diversity, resilience, adaptability, and risk control.'
+        )
 
         st.write("### Best Portfolio Members")
 
@@ -1567,7 +1582,8 @@ It penalizes portfolios with excessive High Risk concentration.
 
         st.dataframe(
             best_team_details.round(4),
-            use_container_width=True
+            use_container_width=True,
+            hide_index=True
         )
 
         st.write("### Top Portfolio Rankings")
@@ -1596,10 +1612,16 @@ It penalizes portfolios with excessive High Risk concentration.
 
         st.dataframe(
             portfolio_results[display_cols].head(50).round(4),
-            use_container_width=True
+            use_container_width=True,
+            hide_index=True
         )
 
-        st.write("### Portfolio Score Distribution")
+        st.write("### Portfolio Score by Rank")
+
+        st.caption(
+            "This line chart shows the top-ranked portfolios ordered by portfolio score. "
+            "It is not a histogram; the curve should gradually decline as rank increases."
+        )
 
         score_distribution = portfolio_results[
             ["Rank", "Portfolio_Score"]
@@ -1654,7 +1676,8 @@ It penalizes portfolios with excessive High Risk concentration.
 
         st.dataframe(
             selected_team_details.round(4),
-            use_container_width=True
+            use_container_width=True,
+            hide_index=True
         )
 
         st.write("### Download Portfolio Results")
