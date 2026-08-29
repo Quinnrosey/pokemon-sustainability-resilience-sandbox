@@ -2532,6 +2532,24 @@ This layer does not replace the main model logic. It is used to inspect addition
             f'{summary["Match Rate"]:.2%}'
         )
 
+                if summary["Match Rate"] >= 0.90:
+            st.success(
+                "Data enrichment quality is acceptable. Most rows were successfully matched with PokéAPI."
+            )
+        elif summary["Match Rate"] >= 0.75:
+            st.warning(
+                "Data enrichment quality is moderate. Some rows were not matched and should be reviewed before using enrichment features for modeling."
+            )
+        else:
+            st.error(
+                "Data enrichment quality is low. The enriched dataset should not be used for model expansion until name matching is improved."
+            )
+
+        st.caption(
+            "Note: 'Unknown' means the value is missing, unavailable from PokéAPI, "
+            "or not matched during enrichment. It is a data-quality label, not a model prediction."
+        )
+
         metric_col5, metric_col6, metric_col7 = st.columns(3)
 
         if "Average Resource_Intensity_Index" in summary:
@@ -2696,8 +2714,10 @@ This layer does not replace the main model logic. It is used to inspect addition
 
             cat_summary = (
                 enriched_df[selected_cat_col]
-                .fillna("Unknown")
+                .fillna("Unknown / Not available")
                 .astype(str)
+                .replace("nan", "Unknown / Not available")
+                .replace("None", "Unknown / Not available")
                 .value_counts()
                 .reset_index()
             )
@@ -2720,6 +2740,10 @@ This layer does not replace the main model logic. It is used to inspect addition
 
         if len(unmatched_df) == 0:
             st.success("No unmatched rows detected.")
+                    st.caption(
+                        "Unmatched rows usually occur when the dataset uses alternate forms, "
+                        "special names, punctuation, regional forms, or naming conventions that do not directly match PokéAPI slugs."
+        )
 
         else:
             st.warning(
