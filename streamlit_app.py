@@ -2497,291 +2497,285 @@ This layer does not replace the main model logic. It is used to inspect addition
         )
 
         st.markdown(
-            """
-Please upload the enriched dataset to the same folder as `streamlit_app.py`.
-
-Expected file name:
-
-```text
-pokemon_enriched_dataset.csv
-        """
-    )
-
-else:
-    st.success(
-        f"Enriched dataset loaded successfully with {len(enriched_df)} rows."
-    )
-
-    summary = build_enrichment_summary(enriched_df)
-
-    st.write("### Enrichment Summary")
-
-    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
-
-    metric_col1.metric(
-        "Total Rows",
-        int(summary["Total Rows"])
-    )
-
-    metric_col2.metric(
-        "Matched Rows",
-        int(summary["Matched Count"])
-    )
-
-    metric_col3.metric(
-        "Unmatched Rows",
-        int(summary["Unmatched Count"])
-    )
-
-    metric_col4.metric(
-        "Match Rate",
-        f'{summary["Match Rate"]:.2%}'
-    )
-
-    metric_col5, metric_col6, metric_col7 = st.columns(3)
-
-    if "Average Resource_Intensity_Index" in summary:
-        metric_col5.metric(
-            "Avg Resource Intensity",
-            f'{summary["Average Resource_Intensity_Index"]:.4f}'
+            "Please upload the enriched dataset to the same folder as `streamlit_app.py`.\n\n"
+            "Expected file name: `pokemon_enriched_dataset.csv`"
         )
 
-    if "Average Ability_Complexity_Index" in summary:
-        metric_col6.metric(
-            "Avg Ability Complexity",
-            f'{summary["Average Ability_Complexity_Index"]:.4f}'
-        )
-
-    if "Average Enrichment_Context_Score" in summary:
-        metric_col7.metric(
-            "Avg Context Score",
-            f'{summary["Average Enrichment_Context_Score"]:.4f}'
-        )
-
-    st.write("### Enrichment Interpretation")
-
-    for line in explain_enrichment_layer(summary):
-        st.markdown(f"- {line}")
-
-    st.divider()
-
-    st.write("### Context Index Explorer")
-
-    context_cols = [
-        "Name",
-        "Type1",
-        "Type2",
-        "PokeAPI_Matched",
-        "PokeAPI_Query_Name",
-        "PokeAPI_ID",
-        "Base_Experience",
-        "Height_dm",
-        "Weight_hg",
-        "Ability_Count",
-        "Hidden_Ability_Count",
-        "Move_Count",
-        "Generation",
-        "Habitat",
-        "Growth_Rate",
-        "Color",
-        "Shape",
-        "Rarity_Context_Flag",
-        "Evolution_Context_Flag",
-        "Resource_Intensity_Index",
-        "Ability_Complexity_Index",
-        "Enrichment_Context_Score"
-    ]
-
-    context_cols = [
-        c for c in context_cols
-        if c in enriched_df.columns
-    ]
-
-    search_name = st.text_input(
-        "Search Pokémon name in enriched dataset",
-        value=""
-    )
-
-    if search_name.strip():
-        explorer_df = enriched_df[
-            enriched_df["Name"]
-            .astype(str)
-            .str.contains(search_name.strip(), case=False, na=False)
-        ].copy()
     else:
-        explorer_df = enriched_df.copy()
+        st.success(
+            f"Enriched dataset loaded successfully with {len(enriched_df)} rows."
+        )
 
-    st.dataframe(
-        explorer_df[context_cols].head(100).round(4),
-        use_container_width=True,
-        hide_index=True
-    )
+        summary = build_enrichment_summary(enriched_df)
 
-    st.caption(
-        "The explorer shows the first 100 matching rows. Use the search box to inspect a specific name."
-    )
+        st.write("### Enrichment Summary")
 
-    st.write("### Top Enrichment Context Scores")
+        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
 
-    top_context = get_top_enrichment_context(
-        enriched_df,
-        top_n=20
-    )
+        metric_col1.metric(
+            "Total Rows",
+            int(summary["Total Rows"])
+        )
 
-    if len(top_context) > 0:
-        top_display_cols = [
+        metric_col2.metric(
+            "Matched Rows",
+            int(summary["Matched Count"])
+        )
+
+        metric_col3.metric(
+            "Unmatched Rows",
+            int(summary["Unmatched Count"])
+        )
+
+        metric_col4.metric(
+            "Match Rate",
+            f'{summary["Match Rate"]:.2%}'
+        )
+
+        metric_col5, metric_col6, metric_col7 = st.columns(3)
+
+        if "Average Resource_Intensity_Index" in summary:
+            metric_col5.metric(
+                "Avg Resource Intensity",
+                f'{summary["Average Resource_Intensity_Index"]:.4f}'
+            )
+
+        if "Average Ability_Complexity_Index" in summary:
+            metric_col6.metric(
+                "Avg Ability Complexity",
+                f'{summary["Average Ability_Complexity_Index"]:.4f}'
+            )
+
+        if "Average Enrichment_Context_Score" in summary:
+            metric_col7.metric(
+                "Avg Context Score",
+                f'{summary["Average Enrichment_Context_Score"]:.4f}'
+            )
+
+        st.write("### Enrichment Interpretation")
+
+        for line in explain_enrichment_layer(summary):
+            st.markdown(f"- {line}")
+
+        st.divider()
+
+        st.write("### Context Index Explorer")
+
+        context_cols = [
             "Name",
             "Type1",
             "Type2",
-            "Generation",
-            "Habitat",
+            "PokeAPI_Matched",
+            "PokeAPI_Query_Name",
+            "PokeAPI_ID",
             "Base_Experience",
+            "Height_dm",
+            "Weight_hg",
             "Ability_Count",
             "Hidden_Ability_Count",
             "Move_Count",
+            "Generation",
+            "Habitat",
+            "Growth_Rate",
+            "Color",
+            "Shape",
+            "Rarity_Context_Flag",
+            "Evolution_Context_Flag",
             "Resource_Intensity_Index",
             "Ability_Complexity_Index",
-            "Enrichment_Context_Score",
-            "Rarity_Context_Flag",
-            "Evolution_Context_Flag"
+            "Enrichment_Context_Score"
         ]
 
-        top_display_cols = [
-            c for c in top_display_cols
-            if c in top_context.columns
+        context_cols = [
+            c for c in context_cols
+            if c in enriched_df.columns
         ]
+
+        search_name = st.text_input(
+            "Search Pokémon name in enriched dataset",
+            value=""
+        )
+
+        if search_name.strip():
+            explorer_df = enriched_df[
+                enriched_df["Name"]
+                .astype(str)
+                .str.contains(search_name.strip(), case=False, na=False)
+            ].copy()
+        else:
+            explorer_df = enriched_df.copy()
 
         st.dataframe(
-            top_context[top_display_cols].round(4),
+            explorer_df[context_cols].head(100).round(4),
             use_container_width=True,
             hide_index=True
         )
 
-        if "Enrichment_Context_Score" in top_context.columns:
-            chart_df = top_context[
-                ["Name", "Enrichment_Context_Score"]
-            ].copy()
+        st.caption(
+            "The explorer shows the first 100 matching rows. Use the search box to inspect a specific name."
+        )
 
-            chart_df["Enrichment_Context_Score"] = pd.to_numeric(
-                chart_df["Enrichment_Context_Score"],
-                errors="coerce"
+        st.write("### Top Enrichment Context Scores")
+
+        top_context = get_top_enrichment_context(
+            enriched_df,
+            top_n=20
+        )
+
+        if len(top_context) > 0:
+            top_display_cols = [
+                "Name",
+                "Type1",
+                "Type2",
+                "Generation",
+                "Habitat",
+                "Base_Experience",
+                "Ability_Count",
+                "Hidden_Ability_Count",
+                "Move_Count",
+                "Resource_Intensity_Index",
+                "Ability_Complexity_Index",
+                "Enrichment_Context_Score",
+                "Rarity_Context_Flag",
+                "Evolution_Context_Flag"
+            ]
+
+            top_display_cols = [
+                c for c in top_display_cols
+                if c in top_context.columns
+            ]
+
+            st.dataframe(
+                top_context[top_display_cols].round(4),
+                use_container_width=True,
+                hide_index=True
+            )
+
+            if "Enrichment_Context_Score" in top_context.columns:
+                chart_df = top_context[
+                    ["Name", "Enrichment_Context_Score"]
+                ].copy()
+
+                chart_df["Enrichment_Context_Score"] = pd.to_numeric(
+                    chart_df["Enrichment_Context_Score"],
+                    errors="coerce"
+                )
+
+                st.bar_chart(
+                    chart_df.set_index("Name")["Enrichment_Context_Score"]
+                )
+
+        else:
+            st.info(
+                "Enrichment_Context_Score is not available in this dataset."
+            )
+
+        st.write("### Categorical Context Summary")
+
+        cat_cols = [
+            "Generation",
+            "Habitat",
+            "Growth_Rate",
+            "Color",
+            "Shape"
+        ]
+
+        available_cat_cols = [
+            c for c in cat_cols
+            if c in enriched_df.columns
+        ]
+
+        if len(available_cat_cols) == 0:
+            st.info("No categorical enrichment columns are available.")
+
+        else:
+            selected_cat_col = st.selectbox(
+                "Select categorical context column",
+                available_cat_cols
+            )
+
+            cat_summary = (
+                enriched_df[selected_cat_col]
+                .fillna("Unknown")
+                .astype(str)
+                .value_counts()
+                .reset_index()
+            )
+
+            cat_summary.columns = [selected_cat_col, "Count"]
+
+            st.dataframe(
+                cat_summary,
+                use_container_width=True,
+                hide_index=True
             )
 
             st.bar_chart(
-                chart_df.set_index("Name")["Enrichment_Context_Score"]
+                cat_summary.set_index(selected_cat_col)["Count"]
             )
 
-    else:
-        st.info(
-            "Enrichment_Context_Score is not available in this dataset."
-        )
+        st.write("### Enrichment QA: Unmatched Rows")
 
-    st.write("### Categorical Context Summary")
+        unmatched_df = get_enrichment_unmatched_rows(enriched_df)
 
-    cat_cols = [
-        "Generation",
-        "Habitat",
-        "Growth_Rate",
-        "Color",
-        "Shape"
-    ]
+        if len(unmatched_df) == 0:
+            st.success("No unmatched rows detected.")
 
-    available_cat_cols = [
-        c for c in cat_cols
-        if c in enriched_df.columns
-    ]
+        else:
+            st.warning(
+                f"{len(unmatched_df)} rows were not matched with PokéAPI."
+            )
 
-    if len(available_cat_cols) == 0:
-        st.info("No categorical enrichment columns are available.")
+            unmatched_display_cols = [
+                "Name",
+                "Type1",
+                "Type2",
+                "HP",
+                "Attack",
+                "Defense",
+                "Sp_Atk",
+                "Sp_Def",
+                "Speed",
+                "PokeAPI_Query_Name"
+            ]
 
-    else:
-        selected_cat_col = st.selectbox(
-            "Select categorical context column",
-            available_cat_cols
-        )
+            unmatched_display_cols = [
+                c for c in unmatched_display_cols
+                if c in unmatched_df.columns
+            ]
 
-        cat_summary = (
-            enriched_df[selected_cat_col]
-            .fillna("Unknown")
-            .astype(str)
-            .value_counts()
-            .reset_index()
-        )
+            st.dataframe(
+                unmatched_df[unmatched_display_cols].head(100),
+                use_container_width=True,
+                hide_index=True
+            )
 
-        cat_summary.columns = [selected_cat_col, "Count"]
+        st.write("### Download Enriched Data")
 
-        st.dataframe(
-            cat_summary,
-            use_container_width=True,
-            hide_index=True
-        )
-
-        st.bar_chart(
-            cat_summary.set_index(selected_cat_col)["Count"]
-        )
-
-    st.write("### Enrichment QA: Unmatched Rows")
-
-    unmatched_df = get_enrichment_unmatched_rows(enriched_df)
-
-    if len(unmatched_df) == 0:
-        st.success("No unmatched rows detected.")
-
-    else:
-        st.warning(
-            f"{len(unmatched_df)} rows were not matched with PokéAPI."
-        )
-
-        unmatched_display_cols = [
-            "Name",
-            "Type1",
-            "Type2",
-            "HP",
-            "Attack",
-            "Defense",
-            "Sp_Atk",
-            "Sp_Def",
-            "Speed",
-            "PokeAPI_Query_Name"
-        ]
-
-        unmatched_display_cols = [
-            c for c in unmatched_display_cols
-            if c in unmatched_df.columns
-        ]
-
-        st.dataframe(
-            unmatched_df[unmatched_display_cols].head(100),
-            use_container_width=True,
-            hide_index=True
-        )
-
-    st.write("### Download Enriched Data")
-
-    enriched_csv = enriched_df.to_csv(
-        index=False,
-        encoding="utf-8-sig"
-    ).encode("utf-8-sig")
-
-    st.download_button(
-        label="Download Enriched Dataset",
-        data=enriched_csv,
-        file_name="pokemon_enriched_dataset.csv",
-        mime="text/csv"
-    )
-
-    if len(unmatched_df) > 0:
-        unmatched_csv = unmatched_df.to_csv(
+        enriched_csv = enriched_df.to_csv(
             index=False,
             encoding="utf-8-sig"
         ).encode("utf-8-sig")
 
         st.download_button(
-            label="Download Unmatched Rows",
-            data=unmatched_csv,
-            file_name="pokemon_enrichment_unmatched.csv",
+            label="Download Enriched Dataset",
+            data=enriched_csv,
+            file_name="pokemon_enriched_dataset.csv",
             mime="text/csv"
         )
+
+        if len(unmatched_df) > 0:
+            unmatched_csv = unmatched_df.to_csv(
+                index=False,
+                encoding="utf-8-sig"
+            ).encode("utf-8-sig")
+
+            st.download_button(
+                label="Download Unmatched Rows",
+                data=unmatched_csv,
+                file_name="pokemon_enrichment_unmatched.csv",
+                mime="text/csv"
+            )
         
 
 # ============================================================
