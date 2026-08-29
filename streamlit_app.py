@@ -991,6 +991,349 @@ def get_portfolio_member_details(pool, team_member_ids):
 
 
 # ============================================================
+# Explainability Engine
+# ============================================================
+
+def describe_level(value, low_threshold=0.40, high_threshold=0.60):
+    """
+    Convert a numeric index into a readable level.
+    """
+    if value >= high_threshold:
+        return "high"
+    elif value >= low_threshold:
+        return "moderate"
+    else:
+        return "low"
+
+
+def explain_single_prediction(result):
+    """
+    Generate readable explanation for one prediction result.
+    """
+
+    predicted_tier = result["Predicted Tier"]
+    score_based_tier = result["Score-Based Tier"]
+    action = result["Recommended Action"]
+
+    confidence = result["Confidence"]
+    p_low = result["P_Low"]
+    p_medium = result["P_Medium"]
+    p_high = result["P_High"]
+
+    risk_score = result["Synthetic Risk Score"]
+    pressure = result["Pressure Index"]
+    resilience = result["Resilience Index"]
+    adaptability = result["Adaptability Index"]
+    balance = result["Balance Index"]
+    diversity = result["Diversity Index"]
+
+    pressure_level = describe_level(pressure)
+    resilience_level = describe_level(resilience)
+    adaptability_level = describe_level(adaptability)
+    balance_level = describe_level(balance)
+    risk_level = describe_level(risk_score)
+
+    explanation_lines = []
+
+    explanation_lines.append(
+        f"The current profile is classified as **{predicted_tier} Risk** "
+        f"with a confidence score of **{confidence:.4f}**."
+    )
+
+    explanation_lines.append(
+        f"The synthetic risk score is **{risk_score:.4f}**, which is considered **{risk_level}** "
+        f"within this simulation framework."
+    )
+
+    # Main risk drivers
+    driver_points = []
+
+    if pressure >= 0.60:
+        driver_points.append(
+            f"Pressure Index is high (**{pressure:.4f}**), meaning the profile has strong pressure-related characteristics."
+        )
+    elif pressure >= 0.40:
+        driver_points.append(
+            f"Pressure Index is moderate (**{pressure:.4f}**), meaning pressure-related characteristics are present but not extreme."
+        )
+    else:
+        driver_points.append(
+            f"Pressure Index is low (**{pressure:.4f}**), which helps reduce the overall risk score."
+        )
+
+    if resilience < 0.40:
+        driver_points.append(
+            f"Resilience Index is low (**{resilience:.4f}**), which increases vulnerability in the synthetic risk logic."
+        )
+    elif resilience < 0.60:
+        driver_points.append(
+            f"Resilience Index is moderate (**{resilience:.4f}**), providing partial risk absorption."
+        )
+    else:
+        driver_points.append(
+            f"Resilience Index is high (**{resilience:.4f}**), which helps offset risk pressure."
+        )
+
+    if balance < 0.40:
+        driver_points.append(
+            f"Balance Index is low (**{balance:.4f}**), suggesting the profile is uneven across stat dimensions."
+        )
+    elif balance < 0.60:
+        driver_points.append(
+            f"Balance Index is moderate (**{balance:.4f}**), suggesting a partially balanced profile."
+        )
+    else:
+        driver_points.append(
+            f"Balance Index is high (**{balance:.4f}**), suggesting a relatively balanced profile."
+        )
+
+    if adaptability >= 0.60:
+        driver_points.append(
+            f"Adaptability Index is high (**{adaptability:.4f}**), which improves response capacity."
+        )
+    elif adaptability >= 0.40:
+        driver_points.append(
+            f"Adaptability Index is moderate (**{adaptability:.4f}**), giving some adaptive capacity."
+        )
+    else:
+        driver_points.append(
+            f"Adaptability Index is low (**{adaptability:.4f}**), which limits adaptive capacity."
+        )
+
+    if diversity >= 1:
+        driver_points.append(
+            "Diversity Index is present because the profile has dual-type characteristics."
+        )
+    else:
+        driver_points.append(
+            "Diversity Index is absent because the profile has only one type."
+        )
+
+    # Decision explanation
+    if "Low Confidence" in action:
+        decision_text = (
+            f"The case is routed to **Human Review** because confidence "
+            f"(**{confidence:.4f}**) is below the review threshold "
+            f"(**{FINAL_REVIEW_THRESHOLD:.2f}**)."
+        )
+    elif "Model/Score Conflict" in action:
+        decision_text = (
+            f"The case is routed to **Human Review** because the model prediction "
+            f"(**{predicted_tier}**) conflicts with the score-based tier "
+            f"(**{score_based_tier}**)."
+        )
+    elif "Possible High Risk" in action:
+        decision_text = (
+            f"The case is routed to **Human Review** because the probability of High Risk "
+            f"(**{p_high:.4f}**) exceeds the override threshold "
+            f"(**{HIGH_RISK_OVERRIDE_THRESHOLD:.2f}**), even though the final prediction is not High."
+        )
+    elif "Auto Escalate" in action:
+        decision_text = (
+            "The case is automatically escalated because it is classified as High Risk "
+            "with sufficient confidence."
+        )
+    elif "Auto Monitor" in action:
+        decision_text = (
+            "The case is automatically monitored because it is classified as Medium Risk "
+            "with sufficient confidence."
+        )
+    elif "Auto Clear" in action:
+        decision_text = (
+            "The case is automatically cleared because it is classified as Low Risk "
+            "with sufficient confidence."
+        )
+    else:
+        decision_text = (
+            "The case is routed to review because the decision rule returned an undefined status."
+        )
+
+    probability_text = (
+        f"Probability distribution: Low = **{p_low:.4f}**, "
+        f"Medium = **{p_medium:.4f}**, High = **{p_high:.4f}**."
+    )
+
+    explanation = {
+        "summary": explanation_lines,
+        "drivers": driver_points,
+        "probability": probability_text,
+        "decision": decision_text
+    }
+
+    return explanation
+
+
+def render_single_explanation(result):
+    """
+    Render explanation block for Streamlit.
+    """
+
+    explanation = explain_single_prediction(result)
+
+    st.write("### Explainability Summary")
+
+    for line in explanation["summary"]:
+        st.markdown(line)
+
+    st.write("#### Main Drivers")
+
+    for point in explanation["drivers"]:
+        st.markdown(f"- {point}")
+
+    st.write("#### Probability Interpretation")
+    st.markdown(explanation["probability"])
+
+    st.write("#### Decision Rule Interpretation")
+    st.markdown(explanation["decision"])
+
+
+def explain_portfolio_result(best_portfolio, team_details):
+    """
+    Generate readable explanation for the selected best portfolio.
+    """
+
+    team = team_details.copy()
+
+    portfolio_score = best_portfolio["Portfolio_Score"]
+    unique_type_count = int(best_portfolio["Unique_Type_Count"])
+    high_risk_count = int(best_portfolio["High_Risk_Count"])
+    avg_risk_score = best_portfolio["Avg_Risk_Score"]
+    avg_resilience = best_portfolio["Avg_Resilience"]
+    avg_balance = best_portfolio["Avg_Balance"]
+    avg_adaptability = best_portfolio["Avg_Adaptability"]
+    avg_pressure = best_portfolio["Avg_Pressure"]
+
+    team_size = len(team)
+
+    risk_mix = (
+        team["Sustainability_Risk_Tier"]
+        .value_counts()
+        .reindex(CLASS_ORDER, fill_value=0)
+    )
+
+    pressure_leader = team.sort_values(
+        "Pressure_Index",
+        ascending=False
+    ).iloc[0]
+
+    resilience_leader = team.sort_values(
+        "Resilience_Index",
+        ascending=False
+    ).iloc[0]
+
+    balance_leader = team.sort_values(
+        "Balance_Index",
+        ascending=False
+    ).iloc[0]
+
+    risk_leader = team.sort_values(
+        "Sustainability_Risk_Score",
+        ascending=False
+    ).iloc[0]
+
+    explanation_lines = []
+
+    explanation_lines.append(
+        f"The selected portfolio achieved a score of **{portfolio_score:.4f}** "
+        f"with **{unique_type_count} unique types** across **{team_size} members**."
+    )
+
+    explanation_lines.append(
+        f"The portfolio contains **{high_risk_count} High Risk member(s)**, "
+        f"with an average synthetic risk score of **{avg_risk_score:.4f}**."
+    )
+
+    if unique_type_count >= team_size + 3:
+        diversity_text = (
+            "Type diversity is strong, which improves the portfolio score because the team is not concentrated in a narrow type structure."
+        )
+    elif unique_type_count >= team_size:
+        diversity_text = (
+            "Type diversity is moderate to strong, providing a reasonably diversified portfolio."
+        )
+    else:
+        diversity_text = (
+            "Type diversity is limited, which may reduce the overall portfolio quality."
+        )
+
+    if high_risk_count == 0:
+        risk_text = (
+            "Risk concentration is low because the portfolio does not include any High Risk member."
+        )
+    elif high_risk_count == 1:
+        risk_text = (
+            "Risk concentration is controlled because only one member is classified as High Risk."
+        )
+    else:
+        risk_text = (
+            "Risk concentration should be reviewed because multiple members are classified as High Risk."
+        )
+
+    balance_text = (
+        f"The average resilience is **{avg_resilience:.4f}**, "
+        f"average balance is **{avg_balance:.4f}**, "
+        f"average adaptability is **{avg_adaptability:.4f}**, "
+        f"and average pressure is **{avg_pressure:.4f}**."
+    )
+
+    member_text = [
+        f"Highest pressure member: **{pressure_leader['Name']}** "
+        f"with Pressure Index **{pressure_leader['Pressure_Index']:.4f}**.",
+        f"Most resilient member: **{resilience_leader['Name']}** "
+        f"with Resilience Index **{resilience_leader['Resilience_Index']:.4f}**.",
+        f"Most balanced member: **{balance_leader['Name']}** "
+        f"with Balance Index **{balance_leader['Balance_Index']:.4f}**.",
+        f"Highest synthetic risk member: **{risk_leader['Name']}** "
+        f"with Risk Score **{risk_leader['Sustainability_Risk_Score']:.4f}**."
+    ]
+
+    risk_mix_text = (
+        f"Risk mix: Low = **{int(risk_mix['Low'])}**, "
+        f"Medium = **{int(risk_mix['Medium'])}**, "
+        f"High = **{int(risk_mix['High'])}**."
+    )
+
+    explanation = {
+        "summary": explanation_lines,
+        "diversity": diversity_text,
+        "risk": risk_text,
+        "balance": balance_text,
+        "members": member_text,
+        "risk_mix": risk_mix_text
+    }
+
+    return explanation
+
+
+def render_portfolio_explanation(best_portfolio, team_details):
+    """
+    Render portfolio explanation block for Streamlit.
+    """
+
+    explanation = explain_portfolio_result(
+        best_portfolio=best_portfolio,
+        team_details=team_details
+    )
+
+    st.write("### Portfolio Explainability Summary")
+
+    for line in explanation["summary"]:
+        st.markdown(line)
+
+    st.write("#### Why this portfolio ranks highly")
+
+    st.markdown(f"- {explanation['diversity']}")
+    st.markdown(f"- {explanation['risk']}")
+    st.markdown(f"- {explanation['balance']}")
+    st.markdown(f"- {explanation['risk_mix']}")
+
+    st.write("#### Key Members")
+
+    for point in explanation["members"]:
+        st.markdown(f"- {point}")
+
+
+# ============================================================
 # Scenario Engine
 # ============================================================
 
@@ -1223,6 +1566,11 @@ with tab1:
         proxy_output.round(4),
         use_container_width=True
     )
+
+
+    st.divider()
+
+    render_single_explanation(result)
 
 
 # ============================================================
@@ -1584,6 +1932,13 @@ It penalizes portfolios with excessive High Risk concentration.
             best_team_details.round(4),
             use_container_width=True,
             hide_index=True
+        )
+
+                st.divider()
+
+        render_portfolio_explanation(
+            best_portfolio=best,
+            team_details=best_team_details
         )
 
         st.write("### Top Portfolio Rankings")
