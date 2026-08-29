@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import streamlit as st
+import requests
 from pathlib import Path
 
 from sklearn.model_selection import train_test_split
@@ -1844,6 +1845,253 @@ def explain_threshold_simulation(summary):
 
 
 # ============================================================
+# Environmental Scenario Connector Engine
+# ============================================================
+
+OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+
+
+@st.cache_data(ttl=3600)
+def fetch_open_meteo_forecast(latitude, longitude, forecast_days=1):
+    """
+    Fetch short-term weather forecast from Open-Meteo.
+
+    Variables:
+    - temperature_2m
+    - precipitation
+    - wind_speed_10m
+
+    Cache TTL = 1 hour to reduce repeated API calls.
+    """
+
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "hourly": "temperature_2m,precipitation,wind_speed_10m",
+        "forecast_days": forecast_days,
+        "timezone": "auto"
+    }
+
+    response = requests.get(
+        OPEN_METEO_FORECAST_URL,
+        params=params,
+        timeout=20
+    )
+
+    response.raise_for_status()
+
+    data = response.json()
+
+    hourly = data.get("hourly", {})
+
+    required_keys = [
+        "time",
+        "temperature_2m",
+        "precipitation",
+        "wind_speed_10m"
+    ]
+
+    missing_keys = [
+        key for key in required_keys
+        if key not in hourly
+    ]
+
+    if missing_keys:
+        raise ValueError(
+            "Open-Meteo response is missing keys: "
+            + ", ".join(missing_keys)
+        )
+
+    weather_df = pd.DataFrame({
+        "time": hourly["time"],
+        "temperature_2m": hourly["temperature_2m"],
+        "precipitation": hourly["precipitation"],
+        "wind_speed_10m": hourly["wind_speed_10m"]
+    })
+
+    weather_df["time"] = pd.to_datetime(
+        weather_df["time"],
+        errors="coerce"
+    )
+
+    for col in ["temperature_2m", "precipitation", "wind_speed_10m"]:
+        weather_df[col] = pd.to_numeric(
+            weather_df[col],
+            errors="coerce"
+        )
+
+    return weather_df
+
+
+def summarize_weather_forecast(weather_df):
+    """
+    Build a compact summary from hourly weather data.
+    """
+
+    summary = {
+        "Forecast Hours": len(weather_df),
+        "Average Temperature": float(weather_df["temperature_2m"].mean()),
+        "Max Temperature": float(weather_df["temperature_2m"].max()),
+        "Total Precipitation": float(weather_df["precipitation"].sum()),
+        "Max Hourly Precipitation": float(weather_df["precipitation"].max()),
+        "Average Wind Speed": float(weather_df["wind_speed_10m"].mean()),
+        "Max Wind Speed": float(weather_df["wind_speed_10m"].max())
+    }
+
+    return summary
+
+
+def minmax_clip(value, low, high):
+    """
+    Convert a value into a 0-1 stress score.
+    Values below low = 0
+    Values above high = 1
+    """
+
+    if pd.isna(value):
+        return 0.0
+
+    score = (value - low) / (high - low)
+    return float(np.clip(score, 0, 1))
+
+
+def build_environmental_stress_score(weather_summary):
+    """
+    Convert weather summary into synthetic environmental stress indices.
+
+    This is a heuristic simulation layer, not a meteorological risk model.
+    """
+
+    max_temp = weather_summary["Max Temperature"]
+    total_precip = weather_summary["Total Precipitation"]
+    max_wind = weather_summary["Max Wind Speed"]
+
+    # Heuristic thresholds for demonstration
+    # Temperature: 30C starts stress, 40C severe
+    # Precipitation: 10mm starts stress, 80mm severe
+    # Wind: 20 km/h starts stress, 70 km/h severe
+
+    temperature_stress = minmax_clip(
+        max_temp,
+        low=30,
+        high=40
+    )
+
+    precipitation_stress = minmax_clip(
+        total_precip,
+        low=10,
+        high=80
+    )
+
+    wind_stress = minmax_clip(
+        max_wind,
+        low=20,
+        high=70
+    )
+
+    environmental_stress_score = (
+        0.40 * temperature_stress +
+        0.35 * precipitation_stress +
+        0.25 * wind_stress
+    )
+
+    environmental_stress_score = float(
+        np.clip(environmental_stress_score, 0, 1)
+    )
+
+    stress_summary = {
+        "Temperature Stress": temperature_stress,
+        "Precipitation Stress": precipitation_stress,
+        "Wind Stress": wind_stress,
+        "Environmental Stress Score": environmental_stress_score
+    }
+
+    return stress_summary
+
+
+def classify_environmental_stress(stress_score):
+    """
+    Classify environmental stress score.
+    """
+
+    if stress_score >= 0.70:
+        return "High Environmental Stress"
+    elif stress_score >= 0.40:
+        return "Moderate Environmental Stress"
+    else:
+        return "Low Environmental Stress"
+
+
+def apply_environmental_adjustment_to_profile(
+    hp,
+    attack,
+    defense,
+    sp_atk,
+    sp_def,
+    speed,
+    stress_score
+):
+    """
+    Apply weather-derived environmental stress to the current sidebar profile.
+
+    Logic:
+    - Higher stress reduces resilience-related stats.
+    - Higher stress increases pressure-related response.
+    - This is a synthetic scenario adjustment, not a real ecological model.
+    """
+
+    resilience_reduction = 1 - (0.12 * stress_score)
+    response_pressure_increase = 1 + (0.08 * stress_score)
+
+    adjusted = {
+        "HP": float(np.clip(hp * resilience_reduction, 1, 255)),
+        "Attack": float(np.clip(attack * response_pressure_increase, 1, 255)),
+        "Defense": float(np.clip(defense * resilience_reduction, 1, 255)),
+        "Sp_Atk": float(np.clip(sp_atk * response_pressure_increase, 1, 255)),
+        "Sp_Def": float(np.clip(sp_def * resilience_reduction, 1, 255)),
+        "Speed": float(np.clip(speed * response_pressure_increase, 1, 255))
+    }
+
+    return adjusted
+
+
+def explain_environmental_scenario(weather_summary, stress_summary):
+    """
+    Generate readable environmental scenario explanation.
+    """
+
+    stress_score = stress_summary["Environmental Stress Score"]
+    stress_label = classify_environmental_stress(stress_score)
+
+    lines = []
+
+    lines.append(
+        f"The forecast contains **{weather_summary['Forecast Hours']} hourly records**."
+    )
+
+    lines.append(
+        f"Maximum temperature is **{weather_summary['Max Temperature']:.2f}°C**, "
+        f"total precipitation is **{weather_summary['Total Precipitation']:.2f} mm**, "
+        f"and maximum wind speed is **{weather_summary['Max Wind Speed']:.2f} km/h**."
+    )
+
+    lines.append(
+        f"The resulting environmental stress score is **{stress_score:.4f}**, classified as **{stress_label}**."
+    )
+
+    lines.append(
+        "In this synthetic scenario, higher environmental stress reduces resilience-related stats "
+        "and increases pressure-response stats before recalculating the risk prediction."
+    )
+
+    lines.append(
+        "This connector is a demonstration layer. It should not be interpreted as a real weather-risk, ecological-risk, or climate-impact model."
+    )
+
+    return lines
+
+
+# ============================================================
 # Scenario Engine
 # ============================================================
 
@@ -1974,12 +2222,13 @@ It demonstrates:
 # Tabs
 # ============================================================
 
-tab1, tab_batch, tab_governance, tab_threshold, tab_enrichment, tab_portfolio, tab2, tab3, tab4 = st.tabs([
+tab1, tab_batch, tab_governance, tab_threshold, tab_enrichment, tab_environment, tab_portfolio, tab2, tab3, tab4 = st.tabs([
     "Risk Screening",
     "Batch Prediction",
     "Governance Dashboard",
     "Threshold Simulator",
     "Data Enrichment",
+    "Environmental Scenario",
     "Portfolio Optimizer",
     "Scenario Simulation",
     "Model Diagnostics",
@@ -3292,6 +3541,289 @@ This layer does not replace the main model logic. It is used to inspect addition
                 mime="text/csv"
             )
         
+
+# ============================================================
+# Tab: Environmental Scenario
+# ============================================================
+
+with tab_environment:
+    st.subheader("Environmental Scenario Connector")
+
+    st.markdown(
+        """
+This connector fetches short-term weather forecast data from Open-Meteo
+and converts it into a synthetic environmental stress score.
+
+The stress score is then used to adjust the current sidebar profile and compare:
+
+- Baseline prediction
+- Weather-adjusted environmental scenario prediction
+        """
+    )
+
+    st.info(
+        "This is a synthetic scenario connector. It is not a real weather-risk, ecological-risk, or climate-impact model."
+    )
+
+    st.write("### Location Input")
+
+    location_col1, location_col2, location_col3 = st.columns(3)
+
+    with location_col1:
+        env_latitude = st.number_input(
+            "Latitude",
+            min_value=-90.0,
+            max_value=90.0,
+            value=8.4325,
+            step=0.0001,
+            format="%.4f"
+        )
+
+    with location_col2:
+        env_longitude = st.number_input(
+            "Longitude",
+            min_value=-180.0,
+            max_value=180.0,
+            value=99.9599,
+            step=0.0001,
+            format="%.4f"
+        )
+
+    with location_col3:
+        env_forecast_days = st.selectbox(
+            "Forecast Days",
+            options=[1, 2, 3, 5, 7],
+            index=0
+        )
+
+    st.caption(
+        "Default coordinates are set near Nakhon Si Thammarat, Thailand. "
+        "You can replace them with any latitude and longitude."
+    )
+
+    run_environment = st.button(
+        "Run Environmental Scenario",
+        type="primary"
+    )
+
+    if run_environment:
+        try:
+            with st.spinner("Fetching weather forecast from Open-Meteo..."):
+                weather_df = fetch_open_meteo_forecast(
+                    latitude=env_latitude,
+                    longitude=env_longitude,
+                    forecast_days=env_forecast_days
+                )
+
+            weather_summary = summarize_weather_forecast(weather_df)
+            stress_summary = build_environmental_stress_score(weather_summary)
+            stress_label = classify_environmental_stress(
+                stress_summary["Environmental Stress Score"]
+            )
+
+            st.session_state["environment_weather_df"] = weather_df
+            st.session_state["environment_weather_summary"] = weather_summary
+            st.session_state["environment_stress_summary"] = stress_summary
+            st.session_state["environment_stress_label"] = stress_label
+
+            st.success("Environmental scenario completed.")
+
+        except Exception as e:
+            st.error("Environmental scenario failed.")
+            st.exception(e)
+
+    if "environment_weather_df" in st.session_state:
+        weather_df = st.session_state["environment_weather_df"]
+        weather_summary = st.session_state["environment_weather_summary"]
+        stress_summary = st.session_state["environment_stress_summary"]
+        stress_label = st.session_state["environment_stress_label"]
+
+        st.write("### Weather Forecast Summary")
+
+        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+
+        metric_col1.metric(
+            "Max Temperature",
+            f'{weather_summary["Max Temperature"]:.2f} °C'
+        )
+
+        metric_col2.metric(
+            "Total Precipitation",
+            f'{weather_summary["Total Precipitation"]:.2f} mm'
+        )
+
+        metric_col3.metric(
+            "Max Wind Speed",
+            f'{weather_summary["Max Wind Speed"]:.2f} km/h'
+        )
+
+        metric_col4.metric(
+            "Forecast Hours",
+            int(weather_summary["Forecast Hours"])
+        )
+
+        st.write("### Environmental Stress Summary")
+
+        stress_col1, stress_col2, stress_col3, stress_col4 = st.columns(4)
+
+        stress_col1.metric(
+            "Temperature Stress",
+            f'{stress_summary["Temperature Stress"]:.4f}'
+        )
+
+        stress_col2.metric(
+            "Precipitation Stress",
+            f'{stress_summary["Precipitation Stress"]:.4f}'
+        )
+
+        stress_col3.metric(
+            "Wind Stress",
+            f'{stress_summary["Wind Stress"]:.4f}'
+        )
+
+        stress_col4.metric(
+            "Stress Level",
+            stress_label
+        )
+
+        st.write("### Environmental Scenario Interpretation")
+
+        for line in explain_environmental_scenario(
+            weather_summary,
+            stress_summary
+        ):
+            st.markdown(f"- {line}")
+
+        st.divider()
+
+        st.write("### Baseline vs Weather-Adjusted Prediction")
+
+        baseline_result = predict_single(
+            type1,
+            type2,
+            hp,
+            attack,
+            defense,
+            sp_atk,
+            sp_def,
+            speed
+        )
+
+        adjusted_stats = apply_environmental_adjustment_to_profile(
+            hp=hp,
+            attack=attack,
+            defense=defense,
+            sp_atk=sp_atk,
+            sp_def=sp_def,
+            speed=speed,
+            stress_score=stress_summary["Environmental Stress Score"]
+        )
+
+        adjusted_result = predict_single(
+            type1,
+            type2,
+            adjusted_stats["HP"],
+            adjusted_stats["Attack"],
+            adjusted_stats["Defense"],
+            adjusted_stats["Sp_Atk"],
+            adjusted_stats["Sp_Def"],
+            adjusted_stats["Speed"]
+        )
+
+        comparison_df = pd.DataFrame([
+            {
+                "Case": "Baseline",
+                "HP": hp,
+                "Attack": attack,
+                "Defense": defense,
+                "Sp_Atk": sp_atk,
+                "Sp_Def": sp_def,
+                "Speed": speed,
+                "Predicted Tier": baseline_result["Predicted Tier"],
+                "Confidence": baseline_result["Confidence"],
+                "P_High": baseline_result["P_High"],
+                "Risk Score": baseline_result["Synthetic Risk Score"],
+                "Recommended Action": baseline_result["Recommended Action"]
+            },
+            {
+                "Case": "Weather-Adjusted",
+                "HP": adjusted_stats["HP"],
+                "Attack": adjusted_stats["Attack"],
+                "Defense": adjusted_stats["Defense"],
+                "Sp_Atk": adjusted_stats["Sp_Atk"],
+                "Sp_Def": adjusted_stats["Sp_Def"],
+                "Speed": adjusted_stats["Speed"],
+                "Predicted Tier": adjusted_result["Predicted Tier"],
+                "Confidence": adjusted_result["Confidence"],
+                "P_High": adjusted_result["P_High"],
+                "Risk Score": adjusted_result["Synthetic Risk Score"],
+                "Recommended Action": adjusted_result["Recommended Action"]
+            }
+        ])
+
+        comparison_df["Risk Score Change"] = (
+            comparison_df["Risk Score"] - comparison_df.loc[0, "Risk Score"]
+        )
+
+        comparison_df["P_High Change"] = (
+            comparison_df["P_High"] - comparison_df.loc[0, "P_High"]
+        )
+
+        st.dataframe(
+            comparison_df.round(4),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.write("### Weather Time Series Preview")
+
+        st.dataframe(
+            weather_df.head(48).round(4),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.line_chart(
+            weather_df.set_index("time")[
+                ["temperature_2m", "precipitation", "wind_speed_10m"]
+            ]
+        )
+
+        st.write("### Download Environmental Scenario Outputs")
+
+        weather_csv = weather_df.to_csv(
+            index=False,
+            encoding="utf-8-sig"
+        ).encode("utf-8-sig")
+
+        comparison_csv = comparison_df.to_csv(
+            index=False,
+            encoding="utf-8-sig"
+        ).encode("utf-8-sig")
+
+        download_col1, download_col2 = st.columns(2)
+
+        with download_col1:
+            st.download_button(
+                label="Download Weather Forecast Data",
+                data=weather_csv,
+                file_name="open_meteo_weather_forecast.csv",
+                mime="text/csv"
+            )
+
+        with download_col2:
+            st.download_button(
+                label="Download Environmental Scenario Comparison",
+                data=comparison_csv,
+                file_name="pokemon_environmental_scenario_comparison.csv",
+                mime="text/csv"
+            )
+
+    else:
+        st.info(
+            "Enter a latitude and longitude, then click 'Run Environmental Scenario'."
+        )
+
 
 # ============================================================
 # Tab: Portfolio Optimizer
