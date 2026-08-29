@@ -239,7 +239,7 @@ def build_model_from_csv():
             y_test,
             y_pred,
             labels=[0, 1, 2]
-        ),
+        ).tolist(),
         "Classification Report": classification_report(
             y_test,
             y_pred,
