@@ -1,6 +1,6 @@
 # Pokémon Sustainability Resilience Sandbox
 
-**Current Release:** `v1.4 Threshold Simulator`
+**Current Release:** `v1.5 Environmental Scenario Connector`
 **Project Type:** Synthetic Machine Learning + Sustainability Decision-Support Prototype  
 **Deployment:** Streamlit App  
 
@@ -41,6 +41,7 @@ https://pokemon-sustainability-resilience-sandbox-27zwyunkra6van7dph4y.streamlit
 | `v1.1` | Explainability Upgrade | Rule-based explanation layer for single prediction and portfolio optimization |
 | `v1.2` | Governance Dashboard | Governance monitoring for human review burden, automated decisions, high-risk concentration, and priority cases |
 | `v1.4` | Threshold Simulator | Interactive governance threshold simulation for review threshold and high-risk override settings |
+| `v1.5` | Environmental Scenario Connector | Open-Meteo weather forecast integration for synthetic environmental stress simulation |
 
 ---
 
@@ -559,6 +560,31 @@ The simulator recalculates:
 - Threshold sensitivity curve
 
 This feature helps demonstrate the trade-off between automation efficiency and human oversight.
+
+---
+
+### Environmental Scenario Connector
+
+The app includes an environmental scenario connector that fetches short-term weather forecast data from Open-Meteo.
+
+Users can enter:
+
+- Latitude
+- Longitude
+- Forecast days
+
+The connector retrieves weather variables such as:
+
+- Temperature
+- Precipitation
+- Wind speed
+
+The app then converts these variables into a synthetic environmental stress score and compares:
+
+- Baseline prediction
+- Weather-adjusted scenario prediction
+
+This feature is a synthetic demonstration and should not be interpreted as a real weather-risk, climate-impact, or ecological-risk model.
 
 ---
 
