@@ -1567,7 +1567,6 @@ with tab1:
         use_container_width=True
     )
 
-
     st.divider()
 
     render_single_explanation(result)
@@ -1934,7 +1933,7 @@ It penalizes portfolios with excessive High Risk concentration.
             hide_index=True
         )
 
-                st.divider()
+        st.divider()
 
         render_portfolio_explanation(
             best_portfolio=best,
