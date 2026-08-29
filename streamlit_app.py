@@ -771,13 +771,75 @@ with tab2:
 with tab3:
     st.subheader("Model Diagnostics")
 
+    st.info(
+        "This page shows global model diagnostics. "
+        "The model performance metrics below are calculated from the holdout test set, "
+        "so they do not change when the sidebar input changes."
+    )
+
+    st.write("## Global Model Performance")
+
     col1, col2, col3 = st.columns(3)
 
     col1.metric("Holdout Accuracy", f'{metrics["Accuracy"]:.4f}')
     col2.metric("Macro F1", f'{metrics["Macro F1"]:.4f}')
     col3.metric("Recall High", f'{metrics["Recall High"]:.4f}')
 
-    st.write("### Risk Tier Distribution")
+    st.caption(
+        "These metrics describe the overall trained model, not the current sidebar input."
+    )
+
+    st.write("## Current Input Diagnostics")
+
+    current_result = predict_single(
+        type1,
+        type2,
+        hp,
+        attack,
+        defense,
+        sp_atk,
+        sp_def,
+        speed
+    )
+
+    input_diag_cols = st.columns(4)
+
+    input_diag_cols[0].metric(
+        "Current Predicted Tier",
+        current_result["Predicted Tier"]
+    )
+
+    input_diag_cols[1].metric(
+        "Current Confidence",
+        f'{current_result["Confidence"]:.4f}'
+    )
+
+    input_diag_cols[2].metric(
+        "Current P_High",
+        f'{current_result["P_High"]:.4f}'
+    )
+
+    input_diag_cols[3].metric(
+        "Current Risk Score",
+        f'{current_result["Synthetic Risk Score"]:.4f}'
+    )
+
+    current_proxy_df = pd.DataFrame([{
+        "Pressure Index": current_result["Pressure Index"],
+        "Resilience Index": current_result["Resilience Index"],
+        "Adaptability Index": current_result["Adaptability Index"],
+        "Balance Index": current_result["Balance Index"],
+        "Diversity Index": current_result["Diversity Index"],
+        "Score-Based Tier": current_result["Score-Based Tier"],
+        "Recommended Action": current_result["Recommended Action"]
+    }])
+
+    st.dataframe(
+        current_proxy_df.round(4),
+        use_container_width=True
+    )
+
+    st.write("## Risk Tier Distribution")
 
     tier_counts = (
         sdf["Sustainability_Risk_Tier"]
@@ -785,29 +847,73 @@ with tab3:
         .reindex(CLASS_ORDER)
     )
 
-    st.bar_chart(tier_counts)
+    tier_counts_df = pd.DataFrame({
+        "Risk Tier": CLASS_ORDER,
+        "Count": tier_counts.values
+    })
 
-    st.write("### Confusion Matrix")
+    try:
+        import altair as alt
+
+        tier_chart = (
+            alt.Chart(tier_counts_df)
+            .mark_bar()
+            .encode(
+                x=alt.X(
+                    "Risk Tier:N",
+                    sort=["Low", "Medium", "High"],
+                    title="Risk Tier"
+                ),
+                y=alt.Y(
+                    "Count:Q",
+                    title="Number of Pokémon"
+                ),
+                tooltip=["Risk Tier", "Count"]
+            )
+            .properties(height=350)
+        )
+
+        st.altair_chart(tier_chart, use_container_width=True)
+
+    except Exception:
+        st.bar_chart(tier_counts_df.set_index("Risk Tier"))
+
+    st.write("## Confusion Matrix")
 
     cm_df = pd.DataFrame(
         metrics["Confusion Matrix"],
-        index=[f"Actual {c}" for c in CLASS_ORDER],
-        columns=[f"Pred {c}" for c in CLASS_ORDER]
+        index=["Actual Low", "Actual Medium", "Actual High"],
+        columns=["Pred Low", "Pred Medium", "Pred High"]
     )
 
-    st.dataframe(cm_df, use_container_width=True)
+    st.dataframe(
+        cm_df,
+        use_container_width=True
+    )
 
-    st.write("### Dataset Preview")
+    st.caption(
+        "The confusion matrix is calculated from the holdout test set. "
+        "It is used to inspect where the model confuses Low, Medium, and High risk tiers."
+    )
+
+    st.write("## Dataset Preview")
 
     preview_cols = [
-        "Name", "Type1", "Type2", "HP", "Attack", "Defense", "Sp_Atk", "Sp_Def", "Speed",
-        "Sustainability_Risk_Score", "Sustainability_Risk_Tier"
+        "Name",
+        "Type1",
+        "Type2",
+        "HP",
+        "Attack",
+        "Defense",
+        "Sp_Atk",
+        "Sp_Def",
+        "Speed"
     ]
 
     preview_cols = [c for c in preview_cols if c in sdf.columns]
 
     st.dataframe(
-        sdf[preview_cols].head(30),
+        sdf[preview_cols].head(20),
         use_container_width=True
     )
 
