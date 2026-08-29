@@ -1,6 +1,6 @@
 # Pokémon Sustainability Resilience Sandbox
 
-**Current Release:** `v1.2 Governance Dashboard`  
+**Current Release:** `v1.4 Threshold Simulator`
 **Project Type:** Synthetic Machine Learning + Sustainability Decision-Support Prototype  
 **Deployment:** Streamlit App  
 
@@ -40,6 +40,7 @@ https://pokemon-sustainability-resilience-sandbox-27zwyunkra6van7dph4y.streamlit
 | `v1.0` | Streamlit Prototype | Core app deployment with single prediction, batch prediction, portfolio optimizer, scenario simulation, diagnostics, and decision rules |
 | `v1.1` | Explainability Upgrade | Rule-based explanation layer for single prediction and portfolio optimization |
 | `v1.2` | Governance Dashboard | Governance monitoring for human review burden, automated decisions, high-risk concentration, and priority cases |
+| `v1.4` | Threshold Simulator | Interactive governance threshold simulation for review threshold and high-risk override settings |
 
 ---
 
@@ -537,6 +538,27 @@ This app is not an empirical ESG scoring system, biodiversity assessment tool, s
 It is a sandbox prototype for demonstrating how machine learning, proxy design, scenario simulation, batch screening, portfolio optimization, explainability, and governance monitoring can be combined in a sustainability-oriented data product.
 
 This project is not affiliated with Pokémon, Nintendo, Game Freak, or The Pokémon Company. The dataset is used only for educational and methodological demonstration.
+
+---
+### Threshold Simulator
+
+The Threshold Simulator allows users to adjust governance thresholds and observe how decision outcomes change.
+
+Users can modify:
+
+- Review Threshold
+- High Risk Override Threshold
+
+The simulator recalculates:
+
+- Human Review Rate
+- Auto Decision Rate
+- Low Confidence Count
+- Possible High Risk Count
+- Simulated Recommended Actions
+- Threshold sensitivity curve
+
+This feature helps demonstrate the trade-off between automation efficiency and human oversight.
 
 ---
 
