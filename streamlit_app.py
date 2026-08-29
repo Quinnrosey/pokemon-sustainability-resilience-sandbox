@@ -25,6 +25,7 @@ st.set_page_config(
 
 BASE_DIR = Path(__file__).parent
 DATA_PATH = BASE_DIR / "pokemon_dataset.csv"
+ENRICHED_DATA_PATH = BASE_DIR / "pokemon_enriched_dataset.csv"
 
 RANDOM_STATE = 42
 
@@ -1741,10 +1742,11 @@ It demonstrates:
 # Tabs
 # ============================================================
 
-tab1, tab_batch, tab_governance, tab_portfolio, tab2, tab3, tab4 = st.tabs([
+tab1, tab_batch, tab_governance, tab_enrichment, tab_portfolio, tab2, tab3, tab4 = st.tabs([
     "Risk Screening",
     "Batch Prediction",
     "Governance Dashboard",
+    "Data Enrichment",
     "Portfolio Optimizer",
     "Scenario Simulation",
     "Model Diagnostics",
@@ -2273,6 +2275,514 @@ It can analyze either:
         st.error("Governance dashboard failed.")
         st.exception(e)
 
+
+# ============================================================
+# Data Enrichment Engine
+# ============================================================
+
+@st.cache_data
+def load_enriched_dataset():
+    """
+    Load PokéAPI-enriched dataset if available.
+    This dataset is used for enrichment analysis only.
+    It does not replace the main model dataset.
+    """
+
+    if not ENRICHED_DATA_PATH.exists():
+        return None
+
+    enriched_df = pd.read_csv(ENRICHED_DATA_PATH)
+
+    enriched_df.columns = (
+        enriched_df.columns
+        .str.strip()
+        .str.replace(" ", "_")
+        .str.replace(".", "", regex=False)
+    )
+
+    return enriched_df
+
+
+def to_boolean_series(series):
+    """
+    Convert mixed boolean/string values into boolean.
+    """
+
+    return (
+        series
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .isin(["true", "1", "yes"])
+    )
+
+
+def build_enrichment_summary(enriched_df):
+    """
+    Build summary metrics for the enrichment dataset.
+    """
+
+    total_rows = len(enriched_df)
+
+    if "PokeAPI_Matched" in enriched_df.columns:
+        matched_series = to_boolean_series(enriched_df["PokeAPI_Matched"])
+        matched_count = int(matched_series.sum())
+    else:
+        matched_series = pd.Series([False] * total_rows)
+        matched_count = 0
+
+    unmatched_count = total_rows - matched_count
+    match_rate = matched_count / total_rows if total_rows else 0
+
+    summary = {
+        "Total Rows": total_rows,
+        "Matched Count": matched_count,
+        "Unmatched Count": unmatched_count,
+        "Match Rate": match_rate
+    }
+
+    optional_numeric_cols = [
+        "Resource_Intensity_Index",
+        "Ability_Complexity_Index",
+        "Enrichment_Context_Score",
+        "Base_Experience",
+        "Height_dm",
+        "Weight_hg",
+        "Ability_Count",
+        "Hidden_Ability_Count",
+        "Move_Count"
+    ]
+
+    for col in optional_numeric_cols:
+        if col in enriched_df.columns:
+            numeric_values = pd.to_numeric(enriched_df[col], errors="coerce")
+            summary[f"Average {col}"] = float(numeric_values.mean())
+
+    if "Rarity_Context_Flag" in enriched_df.columns:
+        rarity = pd.to_numeric(
+            enriched_df["Rarity_Context_Flag"],
+            errors="coerce"
+        ).fillna(0)
+        summary["Rarity Count"] = int((rarity == 1).sum())
+
+    if "Evolution_Context_Flag" in enriched_df.columns:
+        evolution = pd.to_numeric(
+            enriched_df["Evolution_Context_Flag"],
+            errors="coerce"
+        ).fillna(0)
+        summary["Evolution Context Count"] = int((evolution == 1).sum())
+
+    return summary
+
+
+def get_enrichment_unmatched_rows(enriched_df):
+    """
+    Return unmatched rows from enriched dataset.
+    """
+
+    if "PokeAPI_Matched" not in enriched_df.columns:
+        return pd.DataFrame()
+
+    matched_series = to_boolean_series(enriched_df["PokeAPI_Matched"])
+
+    unmatched = enriched_df[~matched_series].copy()
+
+    return unmatched
+
+
+def get_top_enrichment_context(enriched_df, top_n=20):
+    """
+    Return top rows by enrichment context score.
+    """
+
+    if "Enrichment_Context_Score" not in enriched_df.columns:
+        return pd.DataFrame()
+
+    temp = enriched_df.copy()
+    temp["Enrichment_Context_Score"] = pd.to_numeric(
+        temp["Enrichment_Context_Score"],
+        errors="coerce"
+    )
+
+    temp = temp.sort_values(
+        "Enrichment_Context_Score",
+        ascending=False
+    )
+
+    return temp.head(top_n)
+
+
+def explain_enrichment_layer(summary):
+    """
+    Generate readable explanation for enrichment layer.
+    """
+
+    lines = []
+
+    lines.append(
+        f"The enriched dataset contains **{summary['Total Rows']} rows**."
+    )
+
+    lines.append(
+        f"PokéAPI matching succeeded for **{summary['Matched Count']} rows**, "
+        f"with a match rate of **{summary['Match Rate']:.2%}**."
+    )
+
+    if summary["Unmatched Count"] > 0:
+        lines.append(
+            f"There are **{summary['Unmatched Count']} unmatched rows**. "
+            "These may be caused by alternate forms, spelling differences, or names that do not directly match PokéAPI slugs."
+        )
+    else:
+        lines.append(
+            "All rows were successfully matched with PokéAPI records."
+        )
+
+    if "Average Enrichment_Context_Score" in summary:
+        lines.append(
+            f"The average enrichment context score is **{summary['Average Enrichment_Context_Score']:.4f}**."
+        )
+
+    if "Average Ability_Complexity_Index" in summary:
+        lines.append(
+            f"The average ability complexity index is **{summary['Average Ability_Complexity_Index']:.4f}**, "
+            "representing the relative complexity of abilities, hidden abilities, and move count."
+        )
+
+    if "Average Resource_Intensity_Index" in summary:
+        lines.append(
+            f"The average resource intensity index is **{summary['Average Resource_Intensity_Index']:.4f}**, "
+            "representing relative size, weight, and base-experience intensity."
+        )
+
+    return lines
+
+
+# ============================================================
+# Tab: Data Enrichment
+# ============================================================
+
+with tab_enrichment:
+    st.subheader("Data Enrichment Layer")
+
+    st.markdown(
+        """
+This tab analyzes the PokéAPI-enriched dataset.
+
+The enrichment layer adds contextual information such as:
+
+- PokéAPI ID
+- Base experience
+- Height and weight
+- Ability count
+- Hidden ability count
+- Move count
+- Generation
+- Habitat
+- Growth rate
+- Rarity and evolution context
+- Resource intensity index
+- Ability complexity index
+- Enrichment context score
+
+This layer does not replace the main model logic. It is used to inspect additional context that may support future model upgrades.
+        """
+    )
+
+    enriched_df = load_enriched_dataset()
+
+    if enriched_df is None:
+        st.warning(
+            "pokemon_enriched_dataset.csv was not found in the repository root."
+        )
+
+        st.markdown(
+            """
+Please upload the enriched dataset to the same folder as `streamlit_app.py`.
+
+Expected file name:
+
+```text
+pokemon_enriched_dataset.csv
+        """
+    )
+
+else:
+    st.success(
+        f"Enriched dataset loaded successfully with {len(enriched_df)} rows."
+    )
+
+    summary = build_enrichment_summary(enriched_df)
+
+    st.write("### Enrichment Summary")
+
+    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+
+    metric_col1.metric(
+        "Total Rows",
+        int(summary["Total Rows"])
+    )
+
+    metric_col2.metric(
+        "Matched Rows",
+        int(summary["Matched Count"])
+    )
+
+    metric_col3.metric(
+        "Unmatched Rows",
+        int(summary["Unmatched Count"])
+    )
+
+    metric_col4.metric(
+        "Match Rate",
+        f'{summary["Match Rate"]:.2%}'
+    )
+
+    metric_col5, metric_col6, metric_col7 = st.columns(3)
+
+    if "Average Resource_Intensity_Index" in summary:
+        metric_col5.metric(
+            "Avg Resource Intensity",
+            f'{summary["Average Resource_Intensity_Index"]:.4f}'
+        )
+
+    if "Average Ability_Complexity_Index" in summary:
+        metric_col6.metric(
+            "Avg Ability Complexity",
+            f'{summary["Average Ability_Complexity_Index"]:.4f}'
+        )
+
+    if "Average Enrichment_Context_Score" in summary:
+        metric_col7.metric(
+            "Avg Context Score",
+            f'{summary["Average Enrichment_Context_Score"]:.4f}'
+        )
+
+    st.write("### Enrichment Interpretation")
+
+    for line in explain_enrichment_layer(summary):
+        st.markdown(f"- {line}")
+
+    st.divider()
+
+    st.write("### Context Index Explorer")
+
+    context_cols = [
+        "Name",
+        "Type1",
+        "Type2",
+        "PokeAPI_Matched",
+        "PokeAPI_Query_Name",
+        "PokeAPI_ID",
+        "Base_Experience",
+        "Height_dm",
+        "Weight_hg",
+        "Ability_Count",
+        "Hidden_Ability_Count",
+        "Move_Count",
+        "Generation",
+        "Habitat",
+        "Growth_Rate",
+        "Color",
+        "Shape",
+        "Rarity_Context_Flag",
+        "Evolution_Context_Flag",
+        "Resource_Intensity_Index",
+        "Ability_Complexity_Index",
+        "Enrichment_Context_Score"
+    ]
+
+    context_cols = [
+        c for c in context_cols
+        if c in enriched_df.columns
+    ]
+
+    search_name = st.text_input(
+        "Search Pokémon name in enriched dataset",
+        value=""
+    )
+
+    if search_name.strip():
+        explorer_df = enriched_df[
+            enriched_df["Name"]
+            .astype(str)
+            .str.contains(search_name.strip(), case=False, na=False)
+        ].copy()
+    else:
+        explorer_df = enriched_df.copy()
+
+    st.dataframe(
+        explorer_df[context_cols].head(100).round(4),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.caption(
+        "The explorer shows the first 100 matching rows. Use the search box to inspect a specific name."
+    )
+
+    st.write("### Top Enrichment Context Scores")
+
+    top_context = get_top_enrichment_context(
+        enriched_df,
+        top_n=20
+    )
+
+    if len(top_context) > 0:
+        top_display_cols = [
+            "Name",
+            "Type1",
+            "Type2",
+            "Generation",
+            "Habitat",
+            "Base_Experience",
+            "Ability_Count",
+            "Hidden_Ability_Count",
+            "Move_Count",
+            "Resource_Intensity_Index",
+            "Ability_Complexity_Index",
+            "Enrichment_Context_Score",
+            "Rarity_Context_Flag",
+            "Evolution_Context_Flag"
+        ]
+
+        top_display_cols = [
+            c for c in top_display_cols
+            if c in top_context.columns
+        ]
+
+        st.dataframe(
+            top_context[top_display_cols].round(4),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        if "Enrichment_Context_Score" in top_context.columns:
+            chart_df = top_context[
+                ["Name", "Enrichment_Context_Score"]
+            ].copy()
+
+            chart_df["Enrichment_Context_Score"] = pd.to_numeric(
+                chart_df["Enrichment_Context_Score"],
+                errors="coerce"
+            )
+
+            st.bar_chart(
+                chart_df.set_index("Name")["Enrichment_Context_Score"]
+            )
+
+    else:
+        st.info(
+            "Enrichment_Context_Score is not available in this dataset."
+        )
+
+    st.write("### Categorical Context Summary")
+
+    cat_cols = [
+        "Generation",
+        "Habitat",
+        "Growth_Rate",
+        "Color",
+        "Shape"
+    ]
+
+    available_cat_cols = [
+        c for c in cat_cols
+        if c in enriched_df.columns
+    ]
+
+    if len(available_cat_cols) == 0:
+        st.info("No categorical enrichment columns are available.")
+
+    else:
+        selected_cat_col = st.selectbox(
+            "Select categorical context column",
+            available_cat_cols
+        )
+
+        cat_summary = (
+            enriched_df[selected_cat_col]
+            .fillna("Unknown")
+            .astype(str)
+            .value_counts()
+            .reset_index()
+        )
+
+        cat_summary.columns = [selected_cat_col, "Count"]
+
+        st.dataframe(
+            cat_summary,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.bar_chart(
+            cat_summary.set_index(selected_cat_col)["Count"]
+        )
+
+    st.write("### Enrichment QA: Unmatched Rows")
+
+    unmatched_df = get_enrichment_unmatched_rows(enriched_df)
+
+    if len(unmatched_df) == 0:
+        st.success("No unmatched rows detected.")
+
+    else:
+        st.warning(
+            f"{len(unmatched_df)} rows were not matched with PokéAPI."
+        )
+
+        unmatched_display_cols = [
+            "Name",
+            "Type1",
+            "Type2",
+            "HP",
+            "Attack",
+            "Defense",
+            "Sp_Atk",
+            "Sp_Def",
+            "Speed",
+            "PokeAPI_Query_Name"
+        ]
+
+        unmatched_display_cols = [
+            c for c in unmatched_display_cols
+            if c in unmatched_df.columns
+        ]
+
+        st.dataframe(
+            unmatched_df[unmatched_display_cols].head(100),
+            use_container_width=True,
+            hide_index=True
+        )
+
+    st.write("### Download Enriched Data")
+
+    enriched_csv = enriched_df.to_csv(
+        index=False,
+        encoding="utf-8-sig"
+    ).encode("utf-8-sig")
+
+    st.download_button(
+        label="Download Enriched Dataset",
+        data=enriched_csv,
+        file_name="pokemon_enriched_dataset.csv",
+        mime="text/csv"
+    )
+
+    if len(unmatched_df) > 0:
+        unmatched_csv = unmatched_df.to_csv(
+            index=False,
+            encoding="utf-8-sig"
+        ).encode("utf-8-sig")
+
+        st.download_button(
+            label="Download Unmatched Rows",
+            data=unmatched_csv,
+            file_name="pokemon_enrichment_unmatched.csv",
+            mime="text/csv"
+        )
+        
 
 # ============================================================
 # Tab: Portfolio Optimizer
