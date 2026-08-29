@@ -714,6 +714,283 @@ def create_batch_template():
 
 
 # ============================================================
+# Portfolio Optimizer Engine
+# ============================================================
+
+def prepare_portfolio_pool(sdf):
+    """
+    Prepare candidate pool for sustainable portfolio optimization.
+    """
+
+    pool = sdf.copy().reset_index(drop=True)
+
+    required_cols = [
+        "Name",
+        "Type1",
+        "Type2",
+        "HP",
+        "Attack",
+        "Defense",
+        "Sp_Atk",
+        "Sp_Def",
+        "Speed",
+        "Sustainability_Risk_Tier",
+        "Sustainability_Risk_Score",
+        "Resilience_Index",
+        "Pressure_Index",
+        "Adaptability_Index",
+        "Balance_Index",
+        "Diversity_Index"
+    ]
+
+    missing_cols = [c for c in required_cols if c not in pool.columns]
+
+    if missing_cols:
+        raise ValueError(
+            "Portfolio pool is missing required columns: "
+            + ", ".join(missing_cols)
+        )
+
+    pool = pool[required_cols].copy()
+
+    pool["Portfolio_ID"] = [
+        f"P{i:04d}" for i in range(1, len(pool) + 1)
+    ]
+
+    pool["Type2"] = pool["Type2"].replace("", np.nan)
+    pool["Sustainability_Risk_Tier"] = pool["Sustainability_Risk_Tier"].astype(str)
+
+    return pool
+
+
+def evaluate_portfolio(team_df, team_size=6):
+    """
+    Evaluate one selected team or portfolio.
+    Higher Portfolio_Score means a more sustainable and balanced portfolio.
+    """
+
+    team = team_df.copy()
+
+    type_values = []
+
+    for _, row in team.iterrows():
+        if pd.notna(row["Type1"]):
+            type_values.append(str(row["Type1"]))
+
+        if pd.notna(row["Type2"]) and str(row["Type2"]).strip() != "":
+            type_values.append(str(row["Type2"]))
+
+    unique_types = sorted(list(set(type_values)))
+    unique_type_count = len(unique_types)
+
+    max_possible_types = team_size * 2
+    type_diversity_score = unique_type_count / max_possible_types
+
+    avg_resilience = team["Resilience_Index"].mean()
+    avg_balance = team["Balance_Index"].mean()
+    avg_adaptability = team["Adaptability_Index"].mean()
+    avg_pressure = team["Pressure_Index"].mean()
+    avg_risk_score = team["Sustainability_Risk_Score"].mean()
+
+    low_pressure_score = 1 - avg_pressure
+    risk_control_score = 1 - avg_risk_score
+
+    risk_counts = (
+        team["Sustainability_Risk_Tier"]
+        .value_counts()
+        .reindex(CLASS_ORDER, fill_value=0)
+    )
+
+    high_risk_share = risk_counts["High"] / team_size
+    medium_risk_share = risk_counts["Medium"] / team_size
+    low_risk_share = risk_counts["Low"] / team_size
+
+    raw_score = (
+        0.20 * type_diversity_score +
+        0.20 * avg_resilience +
+        0.15 * avg_balance +
+        0.15 * avg_adaptability +
+        0.20 * risk_control_score +
+        0.10 * low_pressure_score
+    )
+
+    high_risk_penalty = 0.10 * high_risk_share
+
+    portfolio_score = raw_score - high_risk_penalty
+    portfolio_score = float(np.clip(portfolio_score, 0, 1))
+
+    result = {
+        "Portfolio_Score": portfolio_score,
+        "Raw_Score": float(raw_score),
+        "High_Risk_Penalty": float(high_risk_penalty),
+        "Type_Diversity_Score": float(type_diversity_score),
+        "Unique_Type_Count": int(unique_type_count),
+        "Unique_Types": ", ".join(unique_types),
+        "Avg_Resilience": float(avg_resilience),
+        "Avg_Balance": float(avg_balance),
+        "Avg_Adaptability": float(avg_adaptability),
+        "Avg_Pressure": float(avg_pressure),
+        "Avg_Risk_Score": float(avg_risk_score),
+        "Risk_Control_Score": float(risk_control_score),
+        "Low_Pressure_Score": float(low_pressure_score),
+        "Low_Risk_Count": int(risk_counts["Low"]),
+        "Medium_Risk_Count": int(risk_counts["Medium"]),
+        "High_Risk_Count": int(risk_counts["High"]),
+        "Low_Risk_Share": float(low_risk_share),
+        "Medium_Risk_Share": float(medium_risk_share),
+        "High_Risk_Share": float(high_risk_share),
+        "Team_Member_IDs": " | ".join(team["Portfolio_ID"].astype(str).tolist()),
+        "Team_Members": " | ".join(team["Name"].astype(str).tolist())
+    }
+
+    return result
+
+
+def random_portfolio_optimizer(
+    pool,
+    team_size=6,
+    n_iterations=5000,
+    max_high_risk_count=None,
+    min_unique_type_count=None,
+    random_state=42
+):
+    """
+    Random sustainable portfolio optimizer.
+
+    The optimizer randomly generates teams, scores each team,
+    applies optional governance constraints, and returns ranked results.
+    """
+
+    if len(pool) < team_size:
+        raise ValueError("Candidate pool is smaller than team size.")
+
+    rng = np.random.default_rng(random_state)
+    results = []
+
+    pool_indices = pool.index.to_numpy()
+
+    for i in range(n_iterations):
+        selected_indices = rng.choice(
+            pool_indices,
+            size=team_size,
+            replace=False
+        )
+
+        team_df = pool.loc[selected_indices].copy()
+
+        evaluated = evaluate_portfolio(
+            team_df=team_df,
+            team_size=team_size
+        )
+
+        if max_high_risk_count is not None:
+            if evaluated["High_Risk_Count"] > max_high_risk_count:
+                continue
+
+        if min_unique_type_count is not None:
+            if evaluated["Unique_Type_Count"] < min_unique_type_count:
+                continue
+
+        evaluated["Iteration"] = i + 1
+        results.append(evaluated)
+
+    if len(results) == 0:
+        raise ValueError(
+            "No portfolios passed the selected constraints. "
+            "Please relax the High Risk or Type Diversity constraints."
+        )
+
+    results_df = pd.DataFrame(results)
+
+    results_df = results_df.sort_values(
+        by=[
+            "Portfolio_Score",
+            "Type_Diversity_Score",
+            "Avg_Resilience",
+            "Avg_Balance",
+            "Avg_Risk_Score"
+        ],
+        ascending=[False, False, False, False, True]
+    ).reset_index(drop=True)
+
+    results_df["Rank"] = np.arange(1, len(results_df) + 1)
+
+    front_cols = [
+        "Rank",
+        "Portfolio_Score",
+        "Raw_Score",
+        "High_Risk_Penalty",
+        "Type_Diversity_Score",
+        "Unique_Type_Count",
+        "Avg_Resilience",
+        "Avg_Balance",
+        "Avg_Adaptability",
+        "Avg_Pressure",
+        "Avg_Risk_Score",
+        "Low_Risk_Count",
+        "Medium_Risk_Count",
+        "High_Risk_Count",
+        "Unique_Types",
+        "Team_Members",
+        "Team_Member_IDs"
+    ]
+
+    remaining_cols = [
+        c for c in results_df.columns
+        if c not in front_cols
+    ]
+
+    results_df = results_df[front_cols + remaining_cols]
+
+    return results_df
+
+
+def get_portfolio_member_details(pool, team_member_ids):
+    """
+    Get detailed member table for a selected portfolio.
+    """
+
+    if isinstance(team_member_ids, str):
+        selected_ids = [
+            x.strip()
+            for x in team_member_ids.split("|")
+        ]
+    else:
+        selected_ids = list(team_member_ids)
+
+    selected_team = pool[
+        pool["Portfolio_ID"].isin(selected_ids)
+    ].copy()
+
+    detail_cols = [
+        "Portfolio_ID",
+        "Name",
+        "Type1",
+        "Type2",
+        "Sustainability_Risk_Tier",
+        "Sustainability_Risk_Score",
+        "Resilience_Index",
+        "Pressure_Index",
+        "Adaptability_Index",
+        "Balance_Index",
+        "Diversity_Index",
+        "HP",
+        "Attack",
+        "Defense",
+        "Sp_Atk",
+        "Sp_Def",
+        "Speed"
+    ]
+
+    detail_cols = [
+        c for c in detail_cols
+        if c in selected_team.columns
+    ]
+
+    return selected_team[detail_cols]
+
+
+# ============================================================
 # Scenario Engine
 # ============================================================
 
@@ -844,9 +1121,10 @@ It demonstrates:
 # Tabs
 # ============================================================
 
-tab1, tab_batch, tab2, tab3, tab4 = st.tabs([
+tab1, tab_batch, tab_portfolio, tab2, tab3, tab4 = st.tabs([
     "Risk Screening",
     "Batch Prediction",
+    "Portfolio Optimizer",
     "Scenario Simulation",
     "Model Diagnostics",
     "Decision Logic"
@@ -1136,6 +1414,267 @@ Optional columns:
         except Exception as e:
             st.error("Batch prediction failed.")
             st.exception(e)
+
+
+# ============================================================
+# Tab: Portfolio Optimizer
+# ============================================================
+
+with tab_portfolio:
+    st.subheader("Sustainable Portfolio Optimizer")
+
+    st.markdown(
+        """
+This tool randomly generates Pokémon-style portfolios and ranks them using a synthetic sustainability score.
+
+The optimizer rewards:
+
+- Type diversity
+- Resilience
+- Balance
+- Adaptability
+- Risk control
+- Low pressure
+
+It penalizes portfolios with excessive High Risk concentration.
+        """
+    )
+
+    portfolio_pool = prepare_portfolio_pool(sdf)
+
+    st.write("### Optimizer Settings")
+
+    setting_col1, setting_col2, setting_col3, setting_col4 = st.columns(4)
+
+    with setting_col1:
+        team_size = st.slider(
+            "Team Size",
+            min_value=3,
+            max_value=6,
+            value=6,
+            step=1
+        )
+
+    with setting_col2:
+        n_iterations = st.slider(
+            "Random Portfolios",
+            min_value=1000,
+            max_value=20000,
+            value=5000,
+            step=1000
+        )
+
+    with setting_col3:
+        max_high_risk_option = st.selectbox(
+            "Max High Risk Count",
+            options=[
+                "No constraint",
+                0,
+                1,
+                2,
+                3
+            ],
+            index=0
+        )
+
+        if max_high_risk_option == "No constraint":
+            max_high_risk_count = None
+        else:
+            max_high_risk_count = int(max_high_risk_option)
+
+    with setting_col4:
+        min_unique_type_count = st.slider(
+            "Min Unique Types",
+            min_value=0,
+            max_value=team_size * 2,
+            value=min(8, team_size * 2),
+            step=1
+        )
+
+        if min_unique_type_count == 0:
+            min_unique_type_count_value = None
+        else:
+            min_unique_type_count_value = int(min_unique_type_count)
+
+    st.caption(
+        "Higher iterations may produce better portfolios but will take longer to run."
+    )
+
+    run_optimizer = st.button(
+        "Run Portfolio Optimizer",
+        type="primary"
+    )
+
+    if run_optimizer:
+        try:
+            with st.spinner("Searching for sustainable portfolios..."):
+                portfolio_results = random_portfolio_optimizer(
+                    pool=portfolio_pool,
+                    team_size=team_size,
+                    n_iterations=n_iterations,
+                    max_high_risk_count=max_high_risk_count,
+                    min_unique_type_count=min_unique_type_count_value,
+                    random_state=RANDOM_STATE
+                )
+
+            st.session_state["portfolio_results"] = portfolio_results
+            st.session_state["portfolio_pool"] = portfolio_pool
+
+            st.success(
+                f"Optimization completed. {len(portfolio_results)} portfolios passed the constraints."
+            )
+
+        except Exception as e:
+            st.error("Portfolio optimization failed.")
+            st.exception(e)
+
+    if "portfolio_results" in st.session_state:
+        portfolio_results = st.session_state["portfolio_results"]
+        portfolio_pool = st.session_state["portfolio_pool"]
+
+        st.write("### Best Portfolio Summary")
+
+        best = portfolio_results.iloc[0]
+
+        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+
+        metric_col1.metric(
+            "Best Portfolio Score",
+            f'{best["Portfolio_Score"]:.4f}'
+        )
+
+        metric_col2.metric(
+            "Unique Types",
+            int(best["Unique_Type_Count"])
+        )
+
+        metric_col3.metric(
+            "High Risk Count",
+            int(best["High_Risk_Count"])
+        )
+
+        metric_col4.metric(
+            "Avg Risk Score",
+            f'{best["Avg_Risk_Score"]:.4f}'
+        )
+
+        st.write("### Best Portfolio Members")
+
+        best_team_details = get_portfolio_member_details(
+            portfolio_pool,
+            best["Team_Member_IDs"]
+        )
+
+        st.dataframe(
+            best_team_details.round(4),
+            use_container_width=True
+        )
+
+        st.write("### Top Portfolio Rankings")
+
+        display_cols = [
+            "Rank",
+            "Portfolio_Score",
+            "Type_Diversity_Score",
+            "Unique_Type_Count",
+            "Avg_Resilience",
+            "Avg_Balance",
+            "Avg_Adaptability",
+            "Avg_Pressure",
+            "Avg_Risk_Score",
+            "Low_Risk_Count",
+            "Medium_Risk_Count",
+            "High_Risk_Count",
+            "Unique_Types",
+            "Team_Members"
+        ]
+
+        display_cols = [
+            c for c in display_cols
+            if c in portfolio_results.columns
+        ]
+
+        st.dataframe(
+            portfolio_results[display_cols].head(50).round(4),
+            use_container_width=True
+        )
+
+        st.write("### Portfolio Score Distribution")
+
+        score_distribution = portfolio_results[
+            ["Rank", "Portfolio_Score"]
+        ].copy()
+
+        score_distribution = score_distribution.head(100)
+
+        st.line_chart(
+            score_distribution.set_index("Rank")
+        )
+
+        st.write("### Inspect a Ranked Portfolio")
+
+        max_rank_to_select = min(50, len(portfolio_results))
+
+        selected_rank = st.selectbox(
+            "Select portfolio rank",
+            options=list(range(1, max_rank_to_select + 1)),
+            index=0
+        )
+
+        selected_portfolio = portfolio_results[
+            portfolio_results["Rank"] == selected_rank
+        ].iloc[0]
+
+        selected_team_details = get_portfolio_member_details(
+            portfolio_pool,
+            selected_portfolio["Team_Member_IDs"]
+        )
+
+        selected_col1, selected_col2, selected_col3, selected_col4 = st.columns(4)
+
+        selected_col1.metric(
+            "Selected Score",
+            f'{selected_portfolio["Portfolio_Score"]:.4f}'
+        )
+
+        selected_col2.metric(
+            "Unique Types",
+            int(selected_portfolio["Unique_Type_Count"])
+        )
+
+        selected_col3.metric(
+            "High Risk Count",
+            int(selected_portfolio["High_Risk_Count"])
+        )
+
+        selected_col4.metric(
+            "Avg Pressure",
+            f'{selected_portfolio["Avg_Pressure"]:.4f}'
+        )
+
+        st.dataframe(
+            selected_team_details.round(4),
+            use_container_width=True
+        )
+
+        st.write("### Download Portfolio Results")
+
+        portfolio_csv = portfolio_results.to_csv(
+            index=False,
+            encoding="utf-8-sig"
+        ).encode("utf-8-sig")
+
+        st.download_button(
+            label="Download Top Portfolio Results",
+            data=portfolio_csv,
+            file_name="pokemon_top_sustainable_portfolios.csv",
+            mime="text/csv"
+        )
+
+    else:
+        st.info(
+            "Set optimizer parameters and click 'Run Portfolio Optimizer' to generate ranked sustainable portfolios."
+        )
 
 
 # ============================================================
