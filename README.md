@@ -1,5 +1,6 @@
 # Pokémon Sustainability Resilience Sandbox 
 | v1.0 Streamlit Prototype
+v1.1 Explainability Upgrade
 
 ## Project Overview
 
