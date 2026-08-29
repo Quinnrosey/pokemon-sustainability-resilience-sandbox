@@ -512,37 +512,6 @@ Although this project uses Pokémon data, the system architecture can be adapted
 
 ---
 
-### 🏨 Eco-Accommodation / ESG Tourism
-
-| Sandbox Variable | Real-World Tourism Variable |
-|---|---|
-| `Type1 / Type2` | Accommodation type / tourism segment |
-| `HP` | Business resilience |
-| `Attack` | Environmental load |
-| `Defense` | Environmental management system |
-| `Sp_Def` | ESG credibility / certification |
-| `Speed` | Response to demand or crisis |
-| `Risk Score` | Sustainability positioning risk |
-| `Portfolio Score` | Destination or accommodation portfolio quality |
-
----
-
-### 🌿 Conservation / Botanical Garden Project
-
-| Sandbox Variable | Real-World Conservation Variable |
-|---|---|
-| `Name` | Project, zone, or program |
-| `Type1 / Type2` | Conservation function / visitor function |
-| `HP` | Ecological carrying capacity |
-| `Attack` | Visitor or land-use pressure |
-| `Defense` | Zoning or physical protection |
-| `Sp_Def` | Scientific monitoring and governance |
-| `Speed` | Operational response capacity |
-| `Environmental Stress` | Weather or climate stress |
-| `Portfolio Optimizer` | Balanced project portfolio planning |
-
----
-
 ## 💰 Value Translation Potential
 
 The current prototype does not estimate real financial value directly. However, the architecture can be extended into value estimation when connected to real-world data.
@@ -689,21 +658,6 @@ Included modules:
 - 👥 Human-in-the-loop Decision Logic
 - 🧠 Rule-based Explainability
 - 📥 CSV Export
-
----
-
-## 🛣️ Future Development
-
-Potential future upgrades include:
-
-- Adjustable model selection
-- Real ESG dataset adaptation
-- Supplier sustainability risk mode
-- Batch-level explainability summary
-- Portfolio comparison dashboard
-- WTP-based value estimation
-- ESG tourism version
-- Conservation project screening version
 
 ---
 
