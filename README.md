@@ -550,13 +550,6 @@ Base Portfolio Value
 
 ---
 
-### WTP-Based Revenue Potential
-
-```text
-WTP-Based Revenue Potential =
-Number of Customers × Incremental WTP × Booking Probability
-```
-
 These formulas are conceptual extensions and require real economic, financial, or survey data before use.
 
 ---
