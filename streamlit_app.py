@@ -444,6 +444,276 @@ def predict_single(type1, type2, hp, attack, defense, sp_atk, sp_def, speed):
 
 
 # ============================================================
+# Batch Prediction Engine
+# ============================================================
+
+def clean_batch_columns(input_df):
+    """
+    Clean uploaded CSV column names to match the model schema.
+    Example:
+    Sp. Atk -> Sp_Atk
+    Sp. Def -> Sp_Def
+    """
+    temp = input_df.copy()
+
+    temp.columns = (
+        temp.columns
+        .str.strip()
+        .str.replace(" ", "_")
+        .str.replace(".", "", regex=False)
+    )
+
+    return temp
+
+
+def validate_batch_schema(input_df):
+    """
+    Validate uploaded batch CSV schema.
+    Name is optional.
+    Type2 is optional and will be treated as single-type if missing.
+    """
+    required_batch_cols = [
+        "Type1",
+        "HP",
+        "Attack",
+        "Defense",
+        "Sp_Atk",
+        "Sp_Def",
+        "Speed"
+    ]
+
+    missing_cols = [
+        col for col in required_batch_cols
+        if col not in input_df.columns
+    ]
+
+    if missing_cols:
+        raise ValueError(
+            "Missing required columns: "
+            + ", ".join(missing_cols)
+        )
+
+    return True
+
+
+def compute_batch_sustainability_scores(input_df):
+    """
+    Compute synthetic sustainability proxy scores for multiple rows.
+    """
+    temp = input_df.copy()
+
+    if "Type2" not in temp.columns:
+        temp["Type2"] = np.nan
+
+    temp["Type2"] = temp["Type2"].replace("", np.nan)
+    temp["Type2"] = temp["Type2"].replace("None", np.nan)
+
+    for col in REQUIRED_STAT_COLS:
+        temp[col] = pd.to_numeric(temp[col], errors="coerce")
+
+    for col in REQUIRED_STAT_COLS:
+        if temp[col].isna().sum() > 0:
+            temp[col] = temp[col].fillna(sdf[col].median())
+
+    scaled = pd.DataFrame(
+        stat_scaler.transform(temp[REQUIRED_STAT_COLS]),
+        columns=[f"{c}_Scaled" for c in REQUIRED_STAT_COLS],
+        index=temp.index
+    ).clip(0, 1)
+
+    temp["Resilience_Index"] = scaled[
+        ["HP_Scaled", "Defense_Scaled", "Sp_Def_Scaled"]
+    ].mean(axis=1)
+
+    temp["Pressure_Index"] = scaled[
+        ["Attack_Scaled", "Sp_Atk_Scaled", "Speed_Scaled"]
+    ].mean(axis=1)
+
+    temp["Adaptability_Index"] = scaled[
+        ["Speed_Scaled", "Sp_Def_Scaled", "HP_Scaled"]
+    ].mean(axis=1)
+
+    stat_imbalance = scaled[
+        [
+            "HP_Scaled",
+            "Attack_Scaled",
+            "Defense_Scaled",
+            "Sp_Atk_Scaled",
+            "Sp_Def_Scaled",
+            "Speed_Scaled"
+        ]
+    ].std(axis=1).to_frame("Stat_Imbalance")
+
+    temp["Balance_Index"] = 1 - imbalance_scaler.transform(
+        stat_imbalance
+    ).ravel()
+
+    temp["Balance_Index"] = temp["Balance_Index"].clip(0, 1)
+
+    temp["Diversity_Index"] = temp["Type2"].notna().astype(int)
+
+    temp["Sustainability_Risk_Score"] = (
+        0.40 * temp["Pressure_Index"] +
+        0.30 * (1 - temp["Resilience_Index"]) +
+        0.20 * (1 - temp["Balance_Index"]) +
+        0.10 * (1 - temp["Diversity_Index"])
+    )
+
+    temp["Score_Based_Tier"] = pd.cut(
+        temp["Sustainability_Risk_Score"],
+        bins=[-np.inf, LOW_MEDIUM_BOUNDARY, MEDIUM_HIGH_BOUNDARY, np.inf],
+        labels=CLASS_ORDER,
+        include_lowest=True
+    ).astype(str)
+
+    return temp
+
+
+def decision_engine_action_batch(predicted_tier, score_based_tier, confidence, p_high):
+    """
+    Human-in-the-loop decision rule for each batch row.
+    """
+    if confidence < FINAL_REVIEW_THRESHOLD:
+        return "Human Review - Low Confidence"
+
+    if predicted_tier != score_based_tier:
+        return "Human Review - Model/Score Conflict"
+
+    if (predicted_tier != "High") and (p_high >= HIGH_RISK_OVERRIDE_THRESHOLD):
+        return "Human Review - Possible High Risk"
+
+    if predicted_tier == "High":
+        return "Auto Escalate as High Risk"
+
+    if predicted_tier == "Medium":
+        return "Auto Monitor as Medium Risk"
+
+    if predicted_tier == "Low":
+        return "Auto Clear as Low Risk"
+
+    return "Human Review - Undefined"
+
+
+def predict_batch(batch_df):
+    """
+    Full batch prediction pipeline:
+    uploaded CSV
+    → schema validation
+    → sustainability proxy scores
+    → ML prediction
+    → probabilities
+    → recommended action
+    """
+    batch = clean_batch_columns(batch_df)
+
+    if "Name" not in batch.columns:
+        batch["Name"] = [f"Batch_Item_{i+1:04d}" for i in range(len(batch))]
+
+    if "Type2" not in batch.columns:
+        batch["Type2"] = np.nan
+
+    validate_batch_schema(batch)
+
+    scored_batch = compute_batch_sustainability_scores(batch)
+
+    model_input = scored_batch[FINAL_FEATURES].copy()
+
+    pred_id = pipeline.predict(model_input)
+    proba = pipeline.predict_proba(model_input)
+
+    scored_batch["Predicted_Tier"] = [
+        ID_TO_CLASS[int(i)] for i in pred_id
+    ]
+
+    scored_batch["P_Low"] = proba[:, 0]
+    scored_batch["P_Medium"] = proba[:, 1]
+    scored_batch["P_High"] = proba[:, 2]
+    scored_batch["Confidence"] = proba.max(axis=1)
+
+    scored_batch["Recommended_Action"] = scored_batch.apply(
+        lambda row: decision_engine_action_batch(
+            predicted_tier=row["Predicted_Tier"],
+            score_based_tier=row["Score_Based_Tier"],
+            confidence=row["Confidence"],
+            p_high=row["P_High"]
+        ),
+        axis=1
+    )
+
+    output_cols = [
+        "Name",
+        "Type1",
+        "Type2",
+        "HP",
+        "Attack",
+        "Defense",
+        "Sp_Atk",
+        "Sp_Def",
+        "Speed",
+        "Predicted_Tier",
+        "Score_Based_Tier",
+        "P_Low",
+        "P_Medium",
+        "P_High",
+        "Confidence",
+        "Recommended_Action",
+        "Sustainability_Risk_Score",
+        "Pressure_Index",
+        "Resilience_Index",
+        "Adaptability_Index",
+        "Balance_Index",
+        "Diversity_Index"
+    ]
+
+    output_cols = [c for c in output_cols if c in scored_batch.columns]
+
+    return scored_batch[output_cols].copy()
+
+
+def create_batch_template():
+    """
+    Create downloadable CSV template for batch prediction.
+    """
+    template = pd.DataFrame([
+        {
+            "Name": "Example_Dragon_Flying",
+            "Type1": "Dragon",
+            "Type2": "Flying",
+            "HP": 90,
+            "Attack": 130,
+            "Defense": 95,
+            "Sp_Atk": 120,
+            "Sp_Def": 90,
+            "Speed": 100
+        },
+        {
+            "Name": "Example_Water_None",
+            "Type1": "Water",
+            "Type2": "",
+            "HP": 70,
+            "Attack": 80,
+            "Defense": 85,
+            "Sp_Atk": 70,
+            "Sp_Def": 75,
+            "Speed": 60
+        },
+        {
+            "Name": "Example_Electric_None",
+            "Type1": "Electric",
+            "Type2": "",
+            "HP": 45,
+            "Attack": 55,
+            "Defense": 40,
+            "Sp_Atk": 50,
+            "Sp_Def": 50,
+            "Speed": 90
+        }
+    ])
+
+    return template
+
+
+# ============================================================
 # Scenario Engine
 # ============================================================
 
@@ -574,8 +844,9 @@ It demonstrates:
 # Tabs
 # ============================================================
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab_batch, tab2, tab3, tab4 = st.tabs([
     "Risk Screening",
+    "Batch Prediction",
     "Scenario Simulation",
     "Model Diagnostics",
     "Decision Logic"
@@ -674,6 +945,197 @@ with tab1:
         proxy_output.round(4),
         use_container_width=True
     )
+
+
+# ============================================================
+# Tab: Batch Prediction
+# ============================================================
+
+with tab_batch:
+    st.subheader("Batch Prediction")
+
+    st.markdown(
+        """
+Upload a CSV file to run sustainability-risk screening for multiple Pokémon-style profiles.
+
+Required columns:
+
+- `Type1`
+- `HP`
+- `Attack`
+- `Defense`
+- `Sp_Atk`
+- `Sp_Def`
+- `Speed`
+
+Optional columns:
+
+- `Name`
+- `Type2`
+        """
+    )
+
+    template_df = create_batch_template()
+
+    template_csv = template_df.to_csv(
+        index=False,
+        encoding="utf-8-sig"
+    ).encode("utf-8-sig")
+
+    st.download_button(
+        label="Download Batch CSV Template",
+        data=template_csv,
+        file_name="pokemon_batch_prediction_template.csv",
+        mime="text/csv"
+    )
+
+    uploaded_batch_file = st.file_uploader(
+        "Upload batch CSV",
+        type=["csv"]
+    )
+
+    if uploaded_batch_file is not None:
+        try:
+            uploaded_batch_df = pd.read_csv(uploaded_batch_file)
+
+            st.write("### Uploaded Data Preview")
+            st.dataframe(
+                uploaded_batch_df.head(20),
+                use_container_width=True
+            )
+
+            batch_results = predict_batch(uploaded_batch_df)
+
+            st.success(
+                f"Batch prediction completed for {len(batch_results)} rows."
+            )
+
+            # ------------------------------------------------
+            # Summary Metrics
+            # ------------------------------------------------
+
+            tier_summary = (
+                batch_results["Predicted_Tier"]
+                .value_counts()
+                .reindex(CLASS_ORDER, fill_value=0)
+            )
+
+            action_summary = (
+                batch_results["Recommended_Action"]
+                .value_counts()
+            )
+
+            metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+
+            metric_col1.metric(
+                "Total Rows",
+                len(batch_results)
+            )
+
+            metric_col2.metric(
+                "Predicted High",
+                int(tier_summary["High"])
+            )
+
+            metric_col3.metric(
+                "Human Review",
+                int(
+                    batch_results["Recommended_Action"]
+                    .str.contains("Human Review")
+                    .sum()
+                )
+            )
+
+            metric_col4.metric(
+                "Average P_High",
+                f'{batch_results["P_High"].mean():.4f}'
+            )
+
+            # ------------------------------------------------
+            # Tier Distribution
+            # ------------------------------------------------
+
+            st.write("### Predicted Risk Tier Distribution")
+
+            tier_summary_df = pd.DataFrame({
+                "Risk Tier": CLASS_ORDER,
+                "Count": tier_summary.values
+            })
+
+            st.bar_chart(
+                tier_summary_df.set_index("Risk Tier")
+            )
+
+            st.dataframe(
+                tier_summary_df,
+                use_container_width=True
+            )
+
+            # ------------------------------------------------
+            # Recommended Action Distribution
+            # ------------------------------------------------
+
+            st.write("### Recommended Action Distribution")
+
+            action_summary_df = action_summary.reset_index()
+            action_summary_df.columns = ["Recommended Action", "Count"]
+
+            st.dataframe(
+                action_summary_df,
+                use_container_width=True
+            )
+
+            # ------------------------------------------------
+            # High-Risk Priority List
+            # ------------------------------------------------
+
+            st.write("### High-Risk Priority List")
+
+            high_priority_cases = batch_results[
+                (
+                    batch_results["Predicted_Tier"] == "High"
+                ) |
+                (
+                    batch_results["P_High"] >= HIGH_RISK_OVERRIDE_THRESHOLD
+                )
+            ].copy()
+
+            high_priority_cases = high_priority_cases.sort_values(
+                ["P_High", "Confidence", "Sustainability_Risk_Score"],
+                ascending=False
+            )
+
+            st.dataframe(
+                high_priority_cases.round(4),
+                use_container_width=True
+            )
+
+            # ------------------------------------------------
+            # Full Results
+            # ------------------------------------------------
+
+            st.write("### Full Batch Prediction Results")
+
+            st.dataframe(
+                batch_results.round(4),
+                use_container_width=True
+            )
+
+            output_csv = batch_results.to_csv(
+                index=False,
+                encoding="utf-8-sig"
+            ).encode("utf-8-sig")
+
+            st.download_button(
+                label="Download Batch Prediction Results",
+                data=output_csv,
+                file_name="pokemon_batch_prediction_results.csv",
+                mime="text/csv"
+            )
+
+        except Exception as e:
+            st.error("Batch prediction failed.")
+            st.exception(e)
 
 
 # ============================================================
