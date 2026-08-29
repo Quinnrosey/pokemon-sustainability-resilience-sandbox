@@ -2734,45 +2734,46 @@ This layer does not replace the main model logic. It is used to inspect addition
                 cat_summary.set_index(selected_cat_col)["Count"]
             )
 
-        st.write("### Enrichment QA: Unmatched Rows")
+            st.write("### Enrichment QA: Unmatched Rows")
 
-        unmatched_df = get_enrichment_unmatched_rows(enriched_df)
-
-        if len(unmatched_df) == 0:
-            st.success("No unmatched rows detected.")
-                    st.caption(
-                        "Unmatched rows usually occur when the dataset uses alternate forms, "
-                        "special names, punctuation, regional forms, or naming conventions that do not directly match PokéAPI slugs."
-        )
-
-        else:
-            st.warning(
-                f"{len(unmatched_df)} rows were not matched with PokéAPI."
+            st.caption(
+                "Unmatched rows usually occur when the dataset uses alternate forms, "
+                "special names, punctuation, regional forms, or naming conventions that do not directly match PokéAPI slugs."
             )
 
-            unmatched_display_cols = [
-                "Name",
-                "Type1",
-                "Type2",
-                "HP",
-                "Attack",
-                "Defense",
-                "Sp_Atk",
-                "Sp_Def",
-                "Speed",
-                "PokeAPI_Query_Name"
-            ]
+            unmatched_df = get_enrichment_unmatched_rows(enriched_df)
 
-            unmatched_display_cols = [
-                c for c in unmatched_display_cols
-                if c in unmatched_df.columns
-            ]
+            if len(unmatched_df) == 0:
+                st.success("No unmatched rows detected.")
+    
+            else:
+                st.warning(
+                    f"{len(unmatched_df)} rows were not matched with PokéAPI."
+                )
 
-            st.dataframe(
-                unmatched_df[unmatched_display_cols].head(100),
-                use_container_width=True,
-                hide_index=True
-            )
+                unmatched_display_cols = [
+                    "Name",
+                    "Type1",
+                    "Type2",
+                    "HP",
+                    "Attack",
+                    "Defense",
+                    "Sp_Atk",
+                    "Sp_Def",
+                    "Speed",
+                    "PokeAPI_Query_Name"
+                ]
+    
+                unmatched_display_cols = [
+                    c for c in unmatched_display_cols
+                    if c in unmatched_df.columns
+                ]
+    
+                st.dataframe(
+                    unmatched_df[unmatched_display_cols].head(100),
+                    use_container_width=True,
+                    hide_index=True
+                )
 
         st.write("### Download Enriched Data")
 
