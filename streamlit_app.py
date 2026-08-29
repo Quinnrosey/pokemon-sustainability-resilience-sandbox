@@ -2546,7 +2546,7 @@ This layer does not replace the main model logic. It is used to inspect addition
             )
 
         st.caption(
-            "Note: 'Unknown' means the value is missing, unavailable from PokéAPI, "
+            "Note: 'Unknown / Not available' means the value is missing, unavailable from PokéAPI, "
             "or not matched during enrichment. It is a data-quality label, not a model prediction."
         )
 
