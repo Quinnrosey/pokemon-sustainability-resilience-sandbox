@@ -1334,6 +1334,283 @@ def render_portfolio_explanation(best_portfolio, team_details):
 
 
 # ============================================================
+# Governance Dashboard Engine
+# ============================================================
+
+def classify_governance_category(action):
+    """
+    Convert detailed recommended action into a broader governance category.
+    """
+
+    action = str(action)
+
+    if "Human Review" in action:
+        return "Human Review"
+
+    if "Auto Escalate" in action:
+        return "Auto Escalate"
+
+    if "Auto Monitor" in action:
+        return "Auto Monitor"
+
+    if "Auto Clear" in action:
+        return "Auto Clear"
+
+    return "Other"
+
+
+def validate_governance_results(results_df):
+    """
+    Validate that the dataframe has the required columns for governance analysis.
+    """
+
+    required_cols = [
+        "Predicted_Tier",
+        "Score_Based_Tier",
+        "P_Low",
+        "P_Medium",
+        "P_High",
+        "Confidence",
+        "Recommended_Action",
+        "Sustainability_Risk_Score"
+    ]
+
+    missing_cols = [
+        col for col in required_cols
+        if col not in results_df.columns
+    ]
+
+    if missing_cols:
+        raise ValueError(
+            "Governance dashboard is missing required columns: "
+            + ", ".join(missing_cols)
+        )
+
+    return True
+
+
+def build_governance_dashboard(results_df):
+    """
+    Build governance summary tables and priority cases from prediction results.
+    """
+
+    validate_governance_results(results_df)
+
+    gov_df = results_df.copy()
+
+    gov_df["Governance_Category"] = gov_df["Recommended_Action"].apply(
+        classify_governance_category
+    )
+
+    gov_df["Is_Human_Review"] = gov_df["Governance_Category"].eq("Human Review")
+    gov_df["Is_Auto_Decision"] = ~gov_df["Is_Human_Review"]
+    gov_df["Is_Predicted_High"] = gov_df["Predicted_Tier"].eq("High")
+    gov_df["Is_Score_High"] = gov_df["Score_Based_Tier"].eq("High")
+    gov_df["Is_Model_Score_Conflict"] = (
+        gov_df["Predicted_Tier"] != gov_df["Score_Based_Tier"]
+    )
+    gov_df["Is_Low_Confidence"] = gov_df["Confidence"] < FINAL_REVIEW_THRESHOLD
+    gov_df["Is_Possible_High_Risk"] = (
+        gov_df["P_High"] >= HIGH_RISK_OVERRIDE_THRESHOLD
+    )
+
+    total_cases = len(gov_df)
+
+    human_review_count = int(gov_df["Is_Human_Review"].sum())
+    auto_decision_count = int(gov_df["Is_Auto_Decision"].sum())
+    predicted_high_count = int(gov_df["Is_Predicted_High"].sum())
+    score_high_count = int(gov_df["Is_Score_High"].sum())
+    model_score_conflict_count = int(gov_df["Is_Model_Score_Conflict"].sum())
+    low_confidence_count = int(gov_df["Is_Low_Confidence"].sum())
+    possible_high_risk_count = int(gov_df["Is_Possible_High_Risk"].sum())
+
+    summary = {
+        "Total Cases": total_cases,
+        "Auto Decision Count": auto_decision_count,
+        "Human Review Count": human_review_count,
+        "Auto Decision Rate": auto_decision_count / total_cases if total_cases else 0,
+        "Human Review Rate": human_review_count / total_cases if total_cases else 0,
+        "Predicted High Count": predicted_high_count,
+        "Predicted High Rate": predicted_high_count / total_cases if total_cases else 0,
+        "Score-Based High Count": score_high_count,
+        "Model/Score Conflict Count": model_score_conflict_count,
+        "Low Confidence Count": low_confidence_count,
+        "Possible High Risk Count": possible_high_risk_count,
+        "Average Confidence": float(gov_df["Confidence"].mean()),
+        "Average P_High": float(gov_df["P_High"].mean()),
+        "Max P_High": float(gov_df["P_High"].max()),
+        "Average Risk Score": float(gov_df["Sustainability_Risk_Score"].mean())
+    }
+
+    category_summary = (
+        gov_df["Governance_Category"]
+        .value_counts()
+        .rename_axis("Governance Category")
+        .reset_index(name="Count")
+    )
+
+    category_summary["Percent"] = (
+        category_summary["Count"] / total_cases * 100
+    ).round(2)
+
+    tier_summary = (
+        gov_df["Predicted_Tier"]
+        .value_counts()
+        .reindex(CLASS_ORDER, fill_value=0)
+        .rename_axis("Predicted Tier")
+        .reset_index(name="Count")
+    )
+
+    tier_summary["Percent"] = (
+        tier_summary["Count"] / total_cases * 100
+    ).round(2)
+
+    action_summary = (
+        gov_df["Recommended_Action"]
+        .value_counts()
+        .rename_axis("Recommended Action")
+        .reset_index(name="Count")
+    )
+
+    action_summary["Percent"] = (
+        action_summary["Count"] / total_cases * 100
+    ).round(2)
+
+    # --------------------------------------------------------
+    # Governance Priority Score
+    # --------------------------------------------------------
+    # Higher score = should be reviewed earlier
+    # --------------------------------------------------------
+
+    gov_df["Governance_Priority_Score"] = (
+        0.40 * gov_df["P_High"] +
+        0.25 * (1 - gov_df["Confidence"]) +
+        0.15 * gov_df["Is_Human_Review"].astype(int) +
+        0.10 * gov_df["Is_Model_Score_Conflict"].astype(int) +
+        0.10 * gov_df["Is_Predicted_High"].astype(int)
+    )
+
+    gov_df["Governance_Priority_Score"] = gov_df[
+        "Governance_Priority_Score"
+    ].clip(0, 1)
+
+    def assign_priority_flag(row):
+        if row["Is_Human_Review"] and row["P_High"] >= HIGH_RISK_OVERRIDE_THRESHOLD:
+            return "Critical Review Priority"
+
+        if row["Is_Model_Score_Conflict"]:
+            return "Model/Score Conflict"
+
+        if row["Is_Low_Confidence"]:
+            return "Low Confidence Review"
+
+        if row["Is_Predicted_High"]:
+            return "High Risk Escalation"
+
+        if row["Governance_Category"] == "Auto Monitor":
+            return "Routine Monitoring"
+
+        if row["Governance_Category"] == "Auto Clear":
+            return "Routine Clearance"
+
+        return "General Review"
+
+    gov_df["Governance_Flag"] = gov_df.apply(
+        assign_priority_flag,
+        axis=1
+    )
+
+    priority_cases = gov_df.sort_values(
+        by=[
+            "Governance_Priority_Score",
+            "P_High",
+            "Sustainability_Risk_Score",
+            "Confidence"
+        ],
+        ascending=[False, False, False, True]
+    ).copy()
+
+    return {
+        "governance_df": gov_df,
+        "summary": summary,
+        "category_summary": category_summary,
+        "tier_summary": tier_summary,
+        "action_summary": action_summary,
+        "priority_cases": priority_cases
+    }
+
+
+def generate_governance_interpretation(summary):
+    """
+    Generate readable governance interpretation.
+    """
+
+    review_rate = summary["Human Review Rate"]
+    auto_rate = summary["Auto Decision Rate"]
+    high_rate = summary["Predicted High Rate"]
+    avg_conf = summary["Average Confidence"]
+    avg_p_high = summary["Average P_High"]
+
+    interpretation = []
+
+    interpretation.append(
+        f"The dashboard analyzed **{summary['Total Cases']} cases**. "
+        f"The system made automated decisions for **{summary['Auto Decision Count']} cases** "
+        f"and routed **{summary['Human Review Count']} cases** to human review."
+    )
+
+    interpretation.append(
+        f"The human review rate is **{review_rate:.2%}**, while the auto-decision rate is **{auto_rate:.2%}**."
+    )
+
+    if review_rate >= 0.50:
+        interpretation.append(
+            "The review burden is high. This means the system is conservative and routes many cases to human oversight."
+        )
+    elif review_rate >= 0.25:
+        interpretation.append(
+            "The review burden is moderate. This indicates a balanced trade-off between automation and human oversight."
+        )
+    else:
+        interpretation.append(
+            "The review burden is low. This means the system is making many automated decisions, which may be efficient but should be monitored."
+        )
+
+    if high_rate >= 0.35:
+        interpretation.append(
+            f"The predicted High Risk rate is **{high_rate:.2%}**, which suggests a relatively high-risk batch profile."
+        )
+    elif high_rate >= 0.15:
+        interpretation.append(
+            f"The predicted High Risk rate is **{high_rate:.2%}**, suggesting a moderate level of high-risk concentration."
+        )
+    else:
+        interpretation.append(
+            f"The predicted High Risk rate is **{high_rate:.2%}**, suggesting limited high-risk concentration."
+        )
+
+    if avg_conf < 0.60:
+        interpretation.append(
+            f"The average confidence is **{avg_conf:.4f}**, which is relatively low and should be interpreted cautiously."
+        )
+    elif avg_conf < 0.75:
+        interpretation.append(
+            f"The average confidence is **{avg_conf:.4f}**, which is moderate. Human review remains important for uncertain cases."
+        )
+    else:
+        interpretation.append(
+            f"The average confidence is **{avg_conf:.4f}**, indicating relatively strong model certainty across the analyzed cases."
+        )
+
+    interpretation.append(
+        f"The average probability of High Risk is **{avg_p_high:.4f}**. "
+        "Cases with high P_High and low confidence should be prioritized for review."
+    )
+
+    return interpretation
+
+
+# ============================================================
 # Scenario Engine
 # ============================================================
 
@@ -1464,9 +1741,10 @@ It demonstrates:
 # Tabs
 # ============================================================
 
-tab1, tab_batch, tab_portfolio, tab2, tab3, tab4 = st.tabs([
+tab1, tab_batch, tab_governance, tab_portfolio, tab2, tab3, tab4 = st.tabs([
     "Risk Screening",
     "Batch Prediction",
+    "Governance Dashboard",
     "Portfolio Optimizer",
     "Scenario Simulation",
     "Model Diagnostics",
@@ -1630,6 +1908,8 @@ Optional columns:
             )
 
             batch_results = predict_batch(uploaded_batch_df)
+            
+            st.session_state["latest_batch_results"] = batch_results
 
             st.success(
                 f"Batch prediction completed for {len(batch_results)} rows."
@@ -1761,6 +2041,237 @@ Optional columns:
         except Exception as e:
             st.error("Batch prediction failed.")
             st.exception(e)
+
+
+# ============================================================
+# Tab: Governance Dashboard
+# ============================================================
+
+with tab_governance:
+    st.subheader("Governance Dashboard")
+
+    st.markdown(
+        """
+This dashboard summarizes AI decision outcomes, human-review burden,
+high-risk concentration, confidence levels, and priority cases for governance review.
+
+It can analyze either:
+
+- the latest uploaded Batch Prediction result, or
+- the full base dataset simulation.
+        """
+    )
+
+    source_options = ["Base Dataset Simulation"]
+
+    if "latest_batch_results" in st.session_state:
+        source_options.insert(0, "Latest Batch Prediction")
+
+    governance_source = st.radio(
+        "Select governance data source",
+        source_options,
+        horizontal=True
+    )
+
+    if governance_source == "Latest Batch Prediction":
+        governance_input = st.session_state["latest_batch_results"].copy()
+        st.success(
+            f"Using latest batch prediction result with {len(governance_input)} rows."
+        )
+
+    else:
+        base_input_cols = [
+            "Name",
+            "Type1",
+            "Type2",
+            "HP",
+            "Attack",
+            "Defense",
+            "Sp_Atk",
+            "Sp_Def",
+            "Speed"
+        ]
+
+        base_input_cols = [
+            c for c in base_input_cols
+            if c in sdf.columns
+        ]
+
+        with st.spinner("Generating governance results from base dataset..."):
+            governance_input = predict_batch(
+                sdf[base_input_cols].copy()
+            )
+
+        st.info(
+            f"Using base dataset simulation with {len(governance_input)} rows."
+        )
+
+    try:
+        governance_outputs = build_governance_dashboard(governance_input)
+
+        governance_df = governance_outputs["governance_df"]
+        summary = governance_outputs["summary"]
+        category_summary = governance_outputs["category_summary"]
+        tier_summary = governance_outputs["tier_summary"]
+        action_summary = governance_outputs["action_summary"]
+        priority_cases = governance_outputs["priority_cases"]
+
+        st.write("### Governance Summary")
+
+        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+
+        metric_col1.metric(
+            "Total Cases",
+            int(summary["Total Cases"])
+        )
+
+        metric_col2.metric(
+            "Human Review Rate",
+            f'{summary["Human Review Rate"]:.2%}'
+        )
+
+        metric_col3.metric(
+            "Auto Decision Rate",
+            f'{summary["Auto Decision Rate"]:.2%}'
+        )
+
+        metric_col4.metric(
+            "Predicted High Rate",
+            f'{summary["Predicted High Rate"]:.2%}'
+        )
+
+        metric_col5, metric_col6, metric_col7, metric_col8 = st.columns(4)
+
+        metric_col5.metric(
+            "Average Confidence",
+            f'{summary["Average Confidence"]:.4f}'
+        )
+
+        metric_col6.metric(
+            "Average P_High",
+            f'{summary["Average P_High"]:.4f}'
+        )
+
+        metric_col7.metric(
+            "Low Confidence Count",
+            int(summary["Low Confidence Count"])
+        )
+
+        metric_col8.metric(
+            "Model/Score Conflicts",
+            int(summary["Model/Score Conflict Count"])
+        )
+
+        st.write("### Governance Interpretation")
+
+        interpretation = generate_governance_interpretation(summary)
+
+        for line in interpretation:
+            st.markdown(f"- {line}")
+
+        st.divider()
+
+        st.write("### Governance Category Distribution")
+
+        st.bar_chart(
+            category_summary.set_index("Governance Category")["Count"]
+        )
+
+        st.dataframe(
+            category_summary,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.write("### Predicted Risk Tier Distribution")
+
+        st.bar_chart(
+            tier_summary.set_index("Predicted Tier")["Count"]
+        )
+
+        st.dataframe(
+            tier_summary,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.write("### Recommended Action Summary")
+
+        st.dataframe(
+            action_summary,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.write("### Governance Priority Cases")
+
+        priority_display_cols = [
+            "Name",
+            "Type1",
+            "Type2",
+            "Predicted_Tier",
+            "Score_Based_Tier",
+            "P_High",
+            "Confidence",
+            "Recommended_Action",
+            "Governance_Category",
+            "Governance_Flag",
+            "Governance_Priority_Score",
+            "Sustainability_Risk_Score",
+            "Pressure_Index",
+            "Resilience_Index",
+            "Balance_Index"
+        ]
+
+        priority_display_cols = [
+            c for c in priority_display_cols
+            if c in priority_cases.columns
+        ]
+
+        st.dataframe(
+            priority_cases[priority_display_cols].head(50).round(4),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.caption(
+            "Priority cases are sorted by a governance priority score that combines P_High, "
+            "low confidence, human-review status, model/score conflict, and predicted High Risk."
+        )
+
+        st.write("### Download Governance Outputs")
+
+        governance_csv = governance_df.to_csv(
+            index=False,
+            encoding="utf-8-sig"
+        ).encode("utf-8-sig")
+
+        priority_csv = priority_cases.to_csv(
+            index=False,
+            encoding="utf-8-sig"
+        ).encode("utf-8-sig")
+
+        download_col1, download_col2 = st.columns(2)
+
+        with download_col1:
+            st.download_button(
+                label="Download Full Governance Results",
+                data=governance_csv,
+                file_name="pokemon_governance_dashboard_results.csv",
+                mime="text/csv"
+            )
+
+        with download_col2:
+            st.download_button(
+                label="Download Governance Priority Cases",
+                data=priority_csv,
+                file_name="pokemon_governance_priority_cases.csv",
+                mime="text/csv"
+            )
+
+    except Exception as e:
+        st.error("Governance dashboard failed.")
+        st.exception(e)
 
 
 # ============================================================
